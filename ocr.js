@@ -26,35 +26,24 @@ const OCR = (() => {
     }
 
     _loading = true;
-    // Some mobile browsers (esp. Samsung/Android) are picky about large cross-origin downloads.
-    // Try a couple of known-good tessdata CDNs before giving up.
-    const langPaths = [
-      'https://tessdata.projectnaptha.com/4.0.0',
-      'https://cdn.jsdelivr.net/gh/naptha/tessdata@gh-pages/4.0.0',
-    ];
-
-    let lastErr = null;
-    for (const lp of langPaths) {
-      try {
-        _worker = await Tesseract.createWorker('deu', 1, {
-          logger: m => {
-            if (m.status === 'recognizing text' && onProgress) {
-              onProgress(Math.round(m.progress * 100), 'Erkenne Text…');
-            } else if (m.status && onProgress) {
-              onProgress(null, m.status);
-            }
-          },
-          langPath: lp,
-        });
-        _workerReady = true;
-        lastErr = null;
-        break;
-      } catch (err) {
-        lastErr = err;
-      }
+    try {
+      _worker = await Tesseract.createWorker('deu', 1, {
+        logger: m => {
+          if (m.status === 'recognizing text' && onProgress) {
+            onProgress(Math.round(m.progress * 100), 'Erkenne Text…');
+          } else if (m.status && onProgress) {
+            onProgress(null, m.status);
+          }
+        },
+        // Use CDN for language data
+        langPath: 'https://tessdata.projectnaptha.com/4.0.0',
+      });
+      _workerReady = true;
+    } catch (err) {
+      _loading = false;
+      throw err;
     }
     _loading = false;
-    if (lastErr) throw lastErr;
     return _worker;
   }
 
@@ -69,6 +58,20 @@ const OCR = (() => {
 
   // ── German Receipt Parser ───────────────────────────────────
 
+// Normalize OCR text for more robust parsing (Android often inserts spaces in numbers)
+function _normalizeText(t) {
+  if (!t) return '';
+  return String(t)
+    .replace(/\u00A0/g, ' ')
+    // keep line breaks, but normalize other whitespace
+    .replace(/\r/g, '')
+    // fix "12, 34" -> "12,34" and "1. 234,56" -> "1.234,56"
+    .replace(/(\d)\s*([,\.])\s*(\d)/g, '$1$2$3')
+    // remove spaces inside digit groups: "1 234,56" -> "1234,56"
+    .replace(/(\d)\s+(\d{3}([,\.]|\b))/g, '$1$2')
+    .trim();
+}
+
   /**
    * Parse raw OCR text from a German fuel receipt.
    * Returns { date, liters, totalCost, pricePerLiter } each with:
@@ -77,8 +80,10 @@ const OCR = (() => {
    *   conf:  confidence 0..1 (0.9=high, 0.5=medium, 0.2=low/implausible)
    */
   function parse(text) {
-    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
-    const flat = text;
+    const norm = _normalizeText(text);
+    const lines = norm.split('
+').map(l => l.trim()).filter(Boolean);
+    const flat = norm;
 
     const result = {
       date:          { value: null, raw: null, conf: 0 },
@@ -130,7 +135,7 @@ const OCR = (() => {
 
     // High confidence: number followed by " L" or " Liter"
     if (!result.liters.value) {
-      const literRE = /([0-9]{1,3}[,\.][0-9]{2,3})\s*[lL](?:iter)?\b/g;
+      const literRE = /([0-9]{1,3}[,\.][0-9]{1,3})\s*[lL](?:iter)?\b/g;
       const lMatches = [...flat.matchAll(literRE)]
         .map(m => ({ raw: m[1], value: _parseDE(m[1]) }))
         .filter(m => m.value && m.value > 1 && m.value < 250);
@@ -156,7 +161,7 @@ const OCR = (() => {
 
     // Medium: largest plausible Euro amount in text
     if (!result.totalCost.value) {
-      const euroRE = /(?:[€$E][\s]*([0-9]{1,4}[,\.][0-9]{2}))|(?:([0-9]{1,4}[,\.][0-9]{2})\s*[€E])/g;
+      const euroRE = /(?:[€$E][\s]*([0-9]{1,4}[,\.][0-9]{2}))|(?:([0-9]{1,4}[,\.][0-9]{2})\s*(?:[€E]|EUR|EURO))/gi;
       const euroMatches = [...flat.matchAll(euroRE)]
         .map(m => ({ raw: m[1] || m[2], value: _parseDE(m[1] || m[2]) }))
         .filter(m => m.value && m.value > 2 && m.value < 500);
@@ -230,14 +235,20 @@ const OCR = (() => {
   // ── Helpers ─────────────────────────────────────────────────
 
   /** Parse German decimal comma number: "45,21" → 45.21 */
-  function _parseDE(s) {
-    if (!s && s !== 0) return null;
-    const str = String(s).trim();
-    // Remove thousand separator dots (e.g. 1.234,56 → 1234.56)
-    const cleaned = str.replace(/\.(?=\d{3}[,])/g, '').replace(',', '.');
-    const v = parseFloat(cleaned);
-    return isNaN(v) ? null : v;
-  }
+function _parseDE(s) {
+  if (!s && s !== 0) return null;
+  const str = String(s).trim()
+    .replace(/[ ]+/g, '')
+    // common OCR confusions (rare, but helps)
+    .replace(/O/g, '0')
+    .replace(/I/g, '1');
+
+  // Remove thousand separator dots (e.g. 1.234,56 → 1234.56)
+  const cleaned = str.replace(/\.(?=\d{3}[,])/g, '').replace(',', '.');
+  const v = parseFloat(cleaned);
+  return isNaN(v) ? null : v;
+}
+
 
   /** Parse various German/ISO date formats to ISO YYYY-MM-DD */
   function _parseDate(s) {
@@ -263,7 +274,8 @@ const OCR = (() => {
 
   function openOverlay() {
     // Reset state
-    document.getElementById('ocr-file-input').value = '';
+    document.getElementById('ocr-file-camera') && (document.getElementById('ocr-file-camera').value = '');
+    document.getElementById('ocr-file-gallery') && (document.getElementById('ocr-file-gallery').value = '');
     document.getElementById('ocr-img-preview-wrap').style.display = 'none';
     document.getElementById('ocr-result-section').style.display = 'none';
     document.getElementById('ocr-progress-wrap').style.display = 'none';
@@ -305,7 +317,20 @@ const OCR = (() => {
       progressLabel.textContent = '✓ Text erkannt';
 
       const parsed = parse(text);
-      showResult(parsed);
+showResult(parsed);
+
+const hasAny = !!(parsed.date.value || parsed.liters.value || parsed.totalCost.value || parsed.pricePerLiter.value);
+if (!hasAny) {
+  progressLabel.textContent = '✓ Text erkannt, aber keine Werte gefunden — Foto näher/heller, Beleg flach';
+  return;
+}
+
+// Auto-transfer if we have the two key fields with decent confidence
+const okLiters = parsed.liters.value && parsed.liters.conf >= 0.70;
+const okTotal  = parsed.totalCost.value && parsed.totalCost.conf >= 0.70;
+if (okLiters && okTotal) {
+  transfer();
+}
 
     } catch (err) {
       progressLabel.textContent = '✗ Fehler: ' + err.message;
