@@ -152,15 +152,17 @@ const OCR = (() => {
     // ── PRICE PER LITER ──────────────────────────────────────────
     const pplCandidates = [];
 
+    // "1,719 EUR/l", "1.719 EUR/1", "1,719 EUR /I", "EUR/l 1,719"
     for (const m of flat.matchAll(/([0-9]{1,2}[,\.][0-9]{3,4})\s*(?:€|eur|euro)?\s*\/\s*([lLiI1])\b/gi)) {
       const v = _parsePricePerLiter(m[1]);
       if (v && v > 0.8 && v < 3.5) pplCandidates.push({ raw: m[1], value: v, conf: 0.86 });
     }
+    // "EUR/l: 1,719" or "EUR/l = 1.719"
     for (const m of flat.matchAll(/(?:€|eur|euro)\s*\/\s*([lLiI1])\s*[:=]?\s*([0-9]{1,2}[,\.][0-9]{3,4})/gi)) {
       const v = _parsePricePerLiter(m[2]);
       if (v && v > 0.8 && v < 3.5) pplCandidates.push({ raw: m[2], value: v, conf: 0.78 });
     }
-    // Manche Kassenzettel: "Preis/L" auf Zeile, danach Zahl
+    // Keine Einheit: Zahl mit 3-4 Dezimalstellen im Kontext "Preis/L" Label
     for (let i = 0; i < lines.length; i++) {
       if (/preis\s*\/?\s*l\b|literpreis|kraftstoffpreis/i.test(lines[i])) {
         const look = [lines[i], lines[i+1]].filter(Boolean).join(' ');
@@ -171,9 +173,19 @@ const OCR = (() => {
         }
       }
     }
+    // Alle isolierten Zahlen mit 3-4 Dezimalstellen → wahrscheinlich €/L
+    // (z.B. "1,719" allein auf einer Zeile, oder nach Sternchen wie "*1,719")
+    for (const m of flat.matchAll(/(?:^|[\s*#])([1-2][,\.][0-9]{3,4})(?:\s|$)/gm)) {
+      const v = _parsePricePerLiter(m[1]);
+      if (v && v > 1.0 && v < 3.0) pplCandidates.push({ raw: m[1], value: v, conf: 0.65 });
+    }
 
     if (pplCandidates.length) {
-      pplCandidates.sort((a,b) => Math.abs(a.value-1.8) - Math.abs(b.value-1.8));
+      pplCandidates.sort((a,b) => {
+        // Konfidenz zuerst, dann Nähe zu 1.70 (typischer Tankstellenpreis)
+        if (Math.abs(a.conf - b.conf) > 0.05) return b.conf - a.conf;
+        return Math.abs(a.value - 1.70) - Math.abs(b.value - 1.70);
+      });
       result.pricePerLiter = pplCandidates[0];
     }
 
@@ -292,6 +304,34 @@ const OCR = (() => {
 
     // ── KREUZVALIDIERUNG ─────────────────────────────────────────
 
+    // ⛔ Sanity-Prüfung ZUERST: wenn Liter ≈ Gesamtbetrag → falsch erkannt
+    // (passiert wenn Preis als Liter gewertet wird, z.B. 84,30 l statt 49,04 l)
+    // Realistischer Kraftstoffpreis: mindestens ~1,10 €/L (EU-Minimum), max 3,50 €/L
+    if (result.liters.value && result.totalCost.value) {
+      const ratio = result.totalCost.value / result.liters.value;
+      if (ratio < 1.05 || ratio > 3.50) {
+        console.warn('OCR: Liter-Wert verworfen (ergibt unrealistischen €/L-Preis):', result.liters.value, '→', ratio.toFixed(3), '€/L');
+        result.liters = { value: null, raw: null, conf: 0 };
+      }
+    }
+
+    // 6) ── BRUTE-FORCE FALLBACK: Liter aus Gesamtbetrag + allen Zahlen im Text ─
+    // Wenn immer noch kein Liter-Wert: suche ALLE 2-Dezimal-Zahlen im Text,
+    // und nehme die, bei der total / zahl einen plausiblen Kraftstoffpreis ergibt
+    if (!result.liters.value && result.totalCost.value) {
+      const allNums = [...flat.matchAll(/\b(\d{1,3}[,.]\d{2})\b/g)]
+        .map(m => _parseLiters(m[1]))
+        .filter(v => v && v >= 5 && v <= 120 && Math.abs(v - result.totalCost.value) > 0.5);
+      for (const v of allNums) {
+        const ppl = result.totalCost.value / v;
+        if (ppl >= 1.20 && ppl <= 2.90) {
+          result.liters = { value: v, raw: String(v), conf: 0.60 };
+          console.log('OCR: Liter per Brute-Force gefunden:', v, '→', ppl.toFixed(3), '€/L');
+          break;
+        }
+      }
+    }
+
     // Total + €/L → Liter berechnen (stark)
     if (result.totalCost.value && result.pricePerLiter.value) {
       const derivedL = result.totalCost.value / result.pricePerLiter.value;
@@ -302,12 +342,13 @@ const OCR = (() => {
       }
     }
 
-    // Liter + Total → €/L berechnen
+    // Liter + Total → €/L berechnen (nur wenn Liter plausibel)
     if (result.totalCost.value && result.liters.value && result.liters.raw !== 'berechnet') {
       const derivedP = result.totalCost.value / result.liters.value;
       if (derivedP > 0.8 && derivedP < 3.5) {
         const p = result.pricePerLiter.value;
-        const looksBogus = (p != null) && (Math.abs(p - 1.0) < 0.0001);
+        // Als "bogus" gilt: exakt 1.0 (Rechenkreis) oder fehlt oder weicht >8% ab
+        const looksBogus = (p != null) && (Math.abs(p - 1.0) < 0.005);
         if (!p || looksBogus || Math.abs(p - derivedP) / derivedP > 0.08) {
           result.pricePerLiter = { value: +derivedP.toFixed(4), raw: 'berechnet', conf: 0.72 };
         }
@@ -382,23 +423,21 @@ const OCR = (() => {
     s = s.replace(/\b(\d{1,4})\s+(\d{2})\b(?=\s*(?:€|eur|euro|\/\s*[lLiI1]|l\b|liter\b))/gi, '$1,$2');
     s = s.replace(/\b(\d{1,3})\s+(\d{2})\b(?=\s*(?:super|diesel|e10|e5|benzin|kraftstoff|fuel))/gi, '$1,$2');
 
-    // "1 719 EUR/I" → "1.719 EUR/I"
-    s = s.replace(/\b(\d{1,2})\s+(\d{3,4})\b(?=\s*(?:€|eur|euro)\s*\/\s*[lLiI1])/gi, '$1.$2');
+    // "1 719 EUR/I" → "1.719 EUR/I"  (vor digit-cleanup damit das Muster noch sichtbar ist)
+    s = s.replace(/\b(\d{1,2})\s+(\d{3,4})\b(?=\s*(?:€|eur|euro)?\s*\/\s*[lLiI1])/gi, '$1.$2');
 
     // ── SCHLÜSSEL-FIX: OCR liest "l" (Liter) als "1" (Ziffer) ────────
     // Shell/BP/Aral: "49,04 1  84,30 EUR" → "49,04 l  84,30 EUR"
-    // Bedingung: Zahl(2dec) SPACE 1 SPACE Zahl(2dec) EUR/€  (die "1" ist allein → Liter)
     s = s.replace(
       /(\b\d{1,3}[,.]\d{2})\s+1\b(?=\s+\d{1,4}[,.]\d{2}\s*(?:€|eur|euro|\s*#|\s*$))/gi,
       '$1 l'
     );
-    // Auch: Zahl(2dec) SPACE 1 am Zeilenende (kein weiteres Preisfeld nötig)
-    s = s.replace(
-      /(\b\d{1,3}[,.]\d{2})\s+1\s*$/gm,
-      '$1 l'
-    );
+    s = s.replace(/(\b\d{1,3}[,.]\d{2})\s+1\s*$/gm, '$1 l');
 
-    // Ziffernabstand entfernen
+    // Normalisiere "EUR /1" → "EUR/1", "EUR / l" → "EUR/l" (Leerzeichen um Slash)
+    s = s.replace(/(eur|€)\s*\/\s*([lLiI1])\b/gi, 'EUR/$2');
+
+    // Ziffernabstand entfernen  — NACH den obigen Muster-Fixes
     s = s.replace(/(\d)\s*([,\.])\s*(\d)/g, '$1$2$3');
     s = s.replace(/[ \t]{2,}/g, ' ');
     return s;
