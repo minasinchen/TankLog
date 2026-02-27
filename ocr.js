@@ -326,7 +326,11 @@ const OCR = (() => {
         if (pct !== null) progressFill.style.width = pct + '%';
         if (msg) progressLabel.textContent = msg;
       });
-
+      
+console.log('OCR RAW TEXT:', text);
+const parsed = parse(text);
+console.log('OCR PARSED:', parsed);
+      
       progressFill.style.width = '100%';
       progressLabel.textContent = '✓ Text erkannt';
 
