@@ -1211,11 +1211,6 @@ const App = (() => {
   async function importJSON(input) {
     const file = input.files[0];
     if (!file) return;
-
-    const name = (file.name || '').toLowerCase();
-    if (name && !(name.endsWith('.csv') || name.endsWith('.tsv') || name.endsWith('.txt'))) {
-      toast('Hinweis: Datei hat keine .csv/.tsv/.txt-Endung – versuche Import trotzdem…', 'warn');
-    }
     try {
       const text = await file.text();
       const payload = JSON.parse(text);
@@ -1244,11 +1239,6 @@ const App = (() => {
   async function importCSV(input) {
     const file = input.files[0];
     if (!file) return;
-
-    const name = (file.name || '').toLowerCase();
-    if (name && !(name.endsWith('.csv') || name.endsWith('.tsv') || name.endsWith('.txt'))) {
-      toast('Hinweis: Datei hat keine .csv/.tsv/.txt-Endung – versuche Import trotzdem…', 'warn');
-    }
 
     if (!_currentVehicleId) {
       toast('Kein Fahrzeug ausgewählt', 'error');

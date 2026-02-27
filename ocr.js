@@ -283,7 +283,10 @@ const OCR = (() => {
 
   function openOverlay() {
     // Reset state
-    document.getElementById('ocr-file-input').value = '';
+    const cam = document.getElementById('ocr-file-camera');
+    const gal = document.getElementById('ocr-file-gallery');
+    if (cam) cam.value = '';
+    if (gal) gal.value = '';
     document.getElementById('ocr-img-preview-wrap').style.display = 'none';
     document.getElementById('ocr-result-section').style.display = 'none';
     document.getElementById('ocr-progress-wrap').style.display = 'none';
@@ -383,4 +386,6 @@ const OCR = (() => {
 
 })();
 
+// Wichtig für Android/Samsung + inline onclick="OCR.openOverlay()"
+// (sonst kann OCR im Modul-Scope hängen und der Button wirkt "tot")
 window.OCR = OCR;

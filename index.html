@@ -254,7 +254,8 @@
           <p style="font-size:12px;color:var(--t3);margin:6px 0 10px">Format: <code>datum,kmstand,liter,euro,notiz</code><br>Dezimalkomma, dd.mm.yyyy oder yyyy-mm-dd</p>
           <label class="btn btn-secondary btn-full" style="cursor:pointer;justify-content:center">
             📊 CSV importieren
-            <!-- Android/Google Drive liefert teils unpassende MIME-Types → keine Filter, damit Datei nicht "gegraut" ist -->
+            <!-- Android/Google Drive: Datepicker filtert oft falsch → Dateien werden "grau".
+                 Daher kein enger accept-Filter. Wir prüfen/parse'n in JS. -->
             <input type="file" accept="*/*" style="display:none" onchange="App.importCSV(this)">
           </label>
           <div id="csv-result" style="margin-top:10px;display:none"></div>
@@ -614,24 +615,22 @@
 
       <!-- Upload zone -->
       <div class="ocr-zone" id="ocr-zone">
+        <!-- Zwei Inputs, weil Android/Samsung oft nur eins von beidem zuverlässig anbietet:
+             - mit capture: öffnet Kamera
+             - ohne capture: öffnet Galerie/Dateien -->
+        <input type="file" id="ocr-file-camera" accept="image/*" capture="environment" style="display:none"
+               onchange="OCR.handleFile(this.files[0])">
+        <input type="file" id="ocr-file-gallery" accept="image/*" style="display:none"
+               onchange="OCR.handleFile(this.files[0])">
         <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="color:var(--amber);margin-bottom:10px">
           <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
           <circle cx="12" cy="13" r="4"/>
         </svg>
-        <p style="font-family:var(--font-head);font-size:16px;font-weight:700;letter-spacing:0.5px;color:var(--t1);margin-bottom:4px">Tankzettel auswählen</p>
-        <p style="font-family:var(--font-mono);font-size:11px;color:var(--t3)">Kein Cloud-Upload · OCR läuft 100% lokal</p>
-
-        <div class="btn-row" style="flex-direction:column;gap:8px;margin-top:12px">
-          <label class="btn btn-primary btn-full" style="cursor:pointer;justify-content:center">
-            📷 Foto aufnehmen
-            <input type="file" id="ocr-file-camera" accept="image/*" capture="environment" style="display:none"
-                   onchange="OCR.handleFile(this.files[0])">
-          </label>
-          <label class="btn btn-secondary btn-full" style="cursor:pointer;justify-content:center">
-            🖼️ Foto aus Galerie / Dateien
-            <input type="file" id="ocr-file-gallery" accept="image/*" style="display:none"
-                   onchange="OCR.handleFile(this.files[0])">
-          </label>
+        <p style="font-family:var(--font-head);font-size:16px;font-weight:700;letter-spacing:0.5px;color:var(--t1);margin-bottom:4px">Foto aufnehmen oder wählen</p>
+        <p style="font-family:var(--font-mono);font-size:11px;color:var(--t3)">Tankzettel · kein Cloud-Upload · 100% lokal</p>
+        <div class="btn-row" style="margin-top:10px;gap:10px">
+          <button class="btn btn-primary" style="flex:1" onclick="document.getElementById('ocr-file-camera').click()">Kamera</button>
+          <button class="btn btn-secondary" style="flex:1" onclick="document.getElementById('ocr-file-gallery').click()">Galerie/Dateien</button>
         </div>
       </div>
 
@@ -693,11 +692,12 @@
   </div>
 </div>
 
-<script src="db.js"></script>
-<script src="calc.js"></script>
-<script src="vehicles.js"></script>
-<script src="ocr.js"></script>
-<script src="sync.js"></script>
-<script src="app.js"></script>
+<!-- Cache-Busting für GitHub Pages / Samsung Chrome -->
+<script src="db.js?v=20260227"></script>
+<script src="calc.js?v=20260227"></script>
+<script src="vehicles.js?v=20260227"></script>
+<script src="ocr.js?v=20260227"></script>
+<script src="sync.js?v=20260227"></script>
+<script src="app.js?v=20260227"></script>
 </body>
 </html>
