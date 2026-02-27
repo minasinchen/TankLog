@@ -471,93 +471,35 @@ const OCR = (() => {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // EXIF-Rotation + Bildvorverarbeitung
+  // Billladen mit korrekter EXIF-Orientierung + Vorverarbeitung
   // ─────────────────────────────────────────────────────────────
 
   /**
-   * Liest EXIF-Orientation aus JPEG-Bytes (ohne externe Bibliothek).
-   * Gibt 1–8 zurück (1 = normal, 3 = 180°, 6 = 90° CW, 8 = 90° CCW).
+   * Lädt eine Bilddatei korrekt orientiert.
+   *
+   * STRATEGIE: <img>-Element statt createImageBitmap(file) direkt.
+   * - Das <img>-Element respektiert EXIF-Orientation auf ALLEN Browsern/Plattformen
+   *   (Desktop Chrome, Android Chrome, Safari iOS) — konsistent und zuverlässig.
+   * - createImageBitmap() hingegen verhält sich je nach Browser/Version anders:
+   *   Desktop Chrome 81+ korrigiert EXIF, Android Chrome teilweise nicht → doppelt drehen.
+   * - Durch den <img>-Umweg bekommen wir immer das korrekt ausgerichtete Bild.
    */
-  function _readExifOrientation(arrayBuffer) {
-    try {
-      const view = new DataView(arrayBuffer);
-      if (view.getUint16(0) !== 0xFFD8) return 1; // kein JPEG
-
-      let offset = 2;
-      while (offset < view.byteLength - 2) {
-        const marker = view.getUint16(offset);
-        offset += 2;
-        if (marker === 0xFFE1) { // APP1 = EXIF
-          const exifLen = view.getUint16(offset);
-          // "Exif\0\0"
-          if (view.getUint32(offset + 2) !== 0x45786966) break;
-          const tiffStart = offset + 8;
-          const littleEndian = view.getUint16(tiffStart) === 0x4949;
-          const ifdOffset = view.getUint32(tiffStart + 4, littleEndian);
-          const ifdStart = tiffStart + ifdOffset;
-          const entries = view.getUint16(ifdStart, littleEndian);
-          for (let i = 0; i < entries; i++) {
-            const tag = view.getUint16(ifdStart + 2 + i * 12, littleEndian);
-            if (tag === 0x0112) { // Orientation
-              return view.getUint16(ifdStart + 2 + i * 12 + 8, littleEndian);
-            }
-          }
-          break;
-        } else if ((marker & 0xFF00) !== 0xFF00) {
-          break;
-        } else {
-          offset += view.getUint16(offset);
-        }
-      }
-    } catch (_) {}
-    return 1;
-  }
-
-  /**
-   * Gibt ein Canvas zurück, das gemäß EXIF-Orientation gedreht/gespiegelt ist.
-   * orientation: 1=normal 2=flip-h 3=180 4=flip-v 5=transpose 6=90cw 7=transverse 8=90ccw
-   */
-  function _applyExifOrientation(bitmap, orientation) {
-    let sw = bitmap.width, sh = bitmap.height;
-    const rotated = (orientation >= 5); // 5–8: width & height tauschen
-    const cw = rotated ? sh : sw;
-    const ch = rotated ? sw : sh;
-
-    const c = document.createElement('canvas');
-    c.width = cw; c.height = ch;
-    const ctx = c.getContext('2d');
-
-    // Transformationsmatrix je Orientation-Wert
-    switch (orientation) {
-      case 2: ctx.transform(-1, 0, 0,  1, cw, 0);   break;
-      case 3: ctx.transform(-1, 0, 0, -1, cw, ch);  break;
-      case 4: ctx.transform( 1, 0, 0, -1, 0,  ch);  break;
-      case 5: ctx.transform( 0, 1, 1,  0, 0,   0);  break;
-      case 6: ctx.transform( 0, 1,-1,  0, ch,  0);  break;
-      case 7: ctx.transform( 0,-1,-1,  0, ch, cw);  break;
-      case 8: ctx.transform( 0,-1, 1,  0, 0,  cw);  break;
-      default: break; // 1 = normal
-    }
-    ctx.drawImage(bitmap, 0, 0);
-    return c;
-  }
-
-  /**
-   * Liest eine File/Blob als ArrayBuffer und liefert ein korrekt gedrehtes ImageBitmap.
-   * Ist der Haupt-Einstiegspunkt statt createImageBitmap(file) direkt.
-   */
-  async function _loadImageFixed(file) {
-    const buf = await file.arrayBuffer();
-    const orientation = _readExifOrientation(buf);
-
-    // createImageBitmap ignoriert EXIF auf Android Chrome → roher Bitmap zuerst laden
-    const rawBitmap = await createImageBitmap(file);
-
-    if (orientation === 1) return rawBitmap; // kein Drehen nötig
-
-    // Auf Canvas drehen und als neues Bitmap zurückgeben
-    const rotatedCanvas = _applyExifOrientation(rawBitmap, orientation);
-    return await createImageBitmap(rotatedCanvas);
+  function _loadImageFixed(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        URL.revokeObjectURL(url);
+        // Auf Canvas zeichnen — img hat bereits korrekte Orientierung
+        const c = document.createElement('canvas');
+        c.width  = img.naturalWidth;
+        c.height = img.naturalHeight;
+        c.getContext('2d').drawImage(img, 0, 0);
+        resolve(c); // Canvas direkt zurückgeben (createImageBitmap nicht nötig)
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Bild konnte nicht geladen werden')); };
+      img.src = url;
+    });
   }
 
   /**
@@ -639,12 +581,13 @@ const OCR = (() => {
     _setProgress(5, 'Lade Bild…');
 
     try {
-      // EXIF-Rotation korrigieren (Samsung/iOS-Problem)
-      _setProgress(10, 'Orientierung prüfen…');
-      const corrected = await _loadImageFixed(file);
-      _srcBitmap = corrected;
-      _srcW = corrected.width;
-      _srcH = corrected.height;
+      // <img>-Element lädt + korrigiert EXIF zuverlässig auf allen Plattformen
+      _setProgress(10, 'Lade Bild…');
+      const correctedCanvas = await _loadImageFixed(file);
+      // createImageBitmap vom korrekten Canvas für _warpPerspectiveToCanvas
+      _srcBitmap = await createImageBitmap(correctedCanvas);
+      _srcW = _srcBitmap.width;
+      _srcH = _srcBitmap.height;
 
       const mx = Math.round(_srcW * 0.06);
       const my = Math.round(_srcH * 0.04);
@@ -1194,9 +1137,8 @@ const OCR = (() => {
   async function _scanDirect(file) {
     _setProgress(10, 'Scanne…');
     try {
-      // EXIF-Rotation auch im Fallback-Pfad korrigieren
-      const corrected = await _loadImageFixed(file);
-      await _runOCR(corrected);
+      const correctedCanvas = await _loadImageFixed(file);
+      await _runOCR(correctedCanvas);
     } catch (err) {
       _setProgress(0, '✗ Fehler: ' + (err?.message || err));
     }
