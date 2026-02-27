@@ -321,27 +321,26 @@ const OCR = (() => {
     progressFill.style.width = '5%';
     progressLabel.textContent = 'Lade OCR-Engine (einmalig ~10MB)…';
 
-    try {
-      const text = await recognize(file, (pct, msg) => {
-        if (pct !== null) progressFill.style.width = pct + '%';
-        if (msg) progressLabel.textContent = msg;
-      });
-      
-console.log('OCR RAW TEXT:', text);
-const parsed = parse(text);
-console.log('OCR PARSED:', parsed);
-      
-      progressFill.style.width = '100%';
-      progressLabel.textContent = '✓ Text erkannt';
+try {
+  const text = await recognize(file, (pct, msg) => {
+    if (pct !== null) progressFill.style.width = pct + '%';
+    if (msg) progressLabel.textContent = msg;
+  });
 
-      const parsed = parse(text);
-      showResult(parsed);
+  console.log('OCR RAW TEXT:', text);
 
-    } catch (err) {
-      progressLabel.textContent = '✗ Fehler: ' + err.message;
-      progressFill.style.background = 'var(--red)';
-    }
-  }
+  const parsed = parse(text);
+  console.log('OCR PARSED:', parsed);
+
+  progressFill.style.width = '100%';
+  progressLabel.textContent = '✓ Text erkannt';
+
+  showResult(parsed);
+
+} catch (err) {
+  progressLabel.textContent = '✗ Fehler: ' + err.message;
+  progressFill.style.background = 'var(--red)';
+}
 
   function showResult(parsed) {
     const section = document.getElementById('ocr-result-section');
