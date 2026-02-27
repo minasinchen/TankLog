@@ -66,7 +66,6 @@ const OCR = (() => {
    *   conf:  confidence 0..1 (0.9=high, 0.5=medium, 0.2=low/implausible)
    */
   function parse(text) {
-    // Normalize common OCR quirks (spaced decimals, EUR variants, stray separators)
     const normalized = _normalizeOCRText(text);
     const lines = normalized.split('\n').map(l => l.trim()).filter(Boolean);
     const flat = normalized;
@@ -109,7 +108,7 @@ const OCR = (() => {
     // ── LITERS ────────────────────────────────────────────────
 
     // Very high confidence: "Menge" / "Liter" keyword + number
-    const literLabelRE = /(?:menge|liter|vol(?:umen)?|kraftstoff|fuel)[:\s=]+([0-9]{1,3}[,\.][0-9]{1,3})\s*[lL]?/gi;
+    const literLabelRE = /(?:menge|liter|vol(?:umen)?|kraftstoff|fuel)[:\s=]+([0-9]{1,3}[,\.][0-9]{1,3})\s*[lL]?\b/gi;
     const llM = [...flat.matchAll(literLabelRE)];
     for (const m of llM) {
       const v = _parseDE(m[1]);
@@ -119,26 +118,25 @@ const OCR = (() => {
       }
     }
 
-    // High confidence: number followed by " L" or " Liter"
+    // High confidence: number followed by " L" or " Liter" (unlabeled)
     if (!result.liters.value) {
       const literRE = /([0-9]{1,3}[,\.][0-9]{2,3})\s*[lL](?:iter)?\b/g;
       const lMatches = [...flat.matchAll(literRE)]
         .map(m => ({ raw: m[1], value: _parseDE(m[1]) }))
         .filter(m => m.value && m.value > 1 && m.value < 250);
       if (lMatches.length) {
-        // Prefer values in realistic range 5–120L for a passenger car
         const best = lMatches.find(m => m.value >= 5 && m.value <= 120) || lMatches[0];
         result.liters = { value: best.value, raw: best.raw, conf: 0.78 };
       }
     }
 
-    // ── TOTAL COST ────────────────────────────────────────────
+    // ── TOTAL COST// ── TOTAL COST ────────────────────────────────────────────
 
-    // High confidence: labeled totals.
-    // Some receipts put the value on the next line → allow small gap with [\s\S]{0,30}
-    const totalKeyRE = /(?:gesamt(?:betrag)?|bruttobetrag|endbetrag|summe|total|betrag|zu\s+zahlen)[\s\S]{0,30}?([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur)?/gi;
-    const tkMatches = [...flat.matchAll(totalKeyRE)];
-    for (const m of tkMatches) {
+    // 1) High confidence: keyword + value (same line), supports € / EUR / EURO
+    const totalKeySameLineRE =
+      /(?:gesamt(?:betrag)?|bruttobetrag|endbetrag|summe|total|betrag|zu\s+zahlen|zahlbetrag)\b[^\d]{0,40}([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur|euro)?/gi;
+
+    for (const m of flat.matchAll(totalKeySameLineRE)) {
       const v = _parseDE(m[1]);
       if (v && v > 1 && v < 1000) {
         result.totalCost = { value: v, raw: m[1], conf: 0.92 };
@@ -146,29 +144,51 @@ const OCR = (() => {
       }
     }
 
-    // Medium: largest plausible Euro amount in text (supports € and EUR)
+    // 2) Keyword line, value on next 1–3 lines (SHELL/ARAL oft)
     if (!result.totalCost.value) {
-      const euroRE = /(?:€\s*([0-9]{1,4}[,\.][0-9]{2}))|(?:([0-9]{1,4}[,\.][0-9]{2})\s*€)|(?:\b([0-9]{1,4}[,\.][0-9]{2})\s*(?:eur)\b)/gi;
-      const euroMatches = [...flat.matchAll(euroRE)]
-        .map(m => ({ raw: m[1] || m[2] || m[3], value: _parseDE(m[1] || m[2] || m[3]) }))
+      const keyLineRE = /(gesamt(?:betrag)?|bruttobetrag|endbetrag|summe|total|zu\s+zahlen|zahlbetrag|betrag)/i;
+
+      for (let i = 0; i < lines.length; i++) {
+        if (!keyLineRE.test(lines[i])) continue;
+
+        const look = [lines[i], lines[i + 1], lines[i + 2], lines[i + 3]]
+          .filter(Boolean)
+          .join(' ');
+
+        const mm = look.match(/([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur|euro)\b/i);
+        if (mm) {
+          const v = _parseDE(mm[1]);
+          if (v && v > 2 && v < 500) {
+            result.totalCost = { value: v, raw: mm[0], conf: 0.80 };
+            break;
+          }
+        }
+      }
+    }
+
+    // 3) Medium: pick largest plausible money amount anywhere (supports € / EUR / EURO)
+    if (!result.totalCost.value) {
+      const moneyRE = /([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur|euro)\b/gi;
+      const moneyMatches = [...flat.matchAll(moneyRE)]
+        .map(m => ({ raw: m[1], value: _parseDE(m[1]) }))
         .filter(m => m.value && m.value > 2 && m.value < 500);
 
-      if (euroMatches.length) {
-        // The total is usually the largest amount
-        const sorted = euroMatches.sort((a, b) => b.value - a.value);
-        result.totalCost = { value: sorted[0].value, raw: sorted[0].raw, conf: 0.60 };
+      if (moneyMatches.length) {
+        moneyMatches.sort((a, b) => b.value - a.value);
+        result.totalCost = { value: moneyMatches[0].value, raw: moneyMatches[0].raw, conf: 0.60 };
       }
     }
 
     // ── PRICE PER LITER ───────────────────────────────────────
 
-    // "1,479 €/l" or "1.479/L" or labeled "Preis", "Kraftstoffpreis", "Listenpreis"
-    const pplRE = /([0-9][,\.][0-9]{3,4})\s*(?:€|eur)?\s*[\/\\]?\s*(?:[lL]|Liter)/gi;
-    const pplLabelRE = /(?:preis[\/\\]l|kraftstoffpreis|listenpreis|€\/l|eur\/l|eur\s*\/\s*l)[:\s=]*([0-9][,\.][0-9]{3,4})/gi;
+    // "1,719 EUR/L" or "1.719 €/L" etc.
+    const pplRE = /([0-9]{1,2}[,\.][0-9]{3,4})\s*(?:€|eur|euro)?\s*\/\s*[lL]\b/gi;
+
+    const pplLabelRE = /(?:preis\s*\/\s*l|preis[\/\\]l|kraftstoffpreis|listenpreis|€\s*\/\s*l|eur\s*\/\s*l|eur\s*\/\s*l)[:\s=]*([0-9]{1,2}[,\.][0-9]{3,4})/gi;
 
     const pplLabelM = flat.match(pplLabelRE);
     if (pplLabelM) {
-      const inner = pplLabelM[0].match(/([0-9][,\.][0-9]{3,4})/);
+      const inner = pplLabelM[0].match(/([0-9]{1,2}[,\.][0-9]{3,4})/);
       if (inner) {
         const v = _parseDE(inner[1]);
         if (v && v > 0.5 && v < 5.0) {
@@ -186,7 +206,7 @@ const OCR = (() => {
       }
     }
 
-    // ── Cross-validation ──────────────────────────────────────
+    // ── Cross-validation// ── Cross-validation ──────────────────────────────────────
 
     // If we have liters + total, derive ppl
     if (result.liters.value && result.totalCost.value && !result.pricePerLiter.value) {
@@ -251,6 +271,7 @@ const OCR = (() => {
     return null;
   }
 
+
   /**
    * Normalize common OCR quirks seen on German fuel receipts.
    * Goal: make regex matching resilient without accidentally breaking dates.
@@ -261,32 +282,33 @@ const OCR = (() => {
 
     // Unify newlines
     s = s.replace(/\r\n?/g, '\n');
+    s = s.replace(/\u00A0/g, ' ');
 
-    // Make currency/units more consistent
+    // Normalize currency words
     s = s.replace(/\bEURO\b/gi, 'EUR');
-    s = s.replace(/€\s*uro/gi, 'EUR');
 
-    // Fix spaced decimals in value+unit contexts (very common on mobile OCR):
-    // "49 04 L" → "49,04 L" | "84 30 EUR" → "84,30 EUR" | "1 719 EUR/L" → "1,719 EUR/L"
-    s = s.replace(/\b(\d{1,3})\s+(\d{2})\s*(?=(?:eur|€|l\b|liter\b|\/\s*l|\/\s*liter))/gi, '$1,$2');
-    s = s.replace(/\b(\d)\s+(\d{3,4})\s*(?=(?:eur\s*\/\s*l|€\s*\/\s*l|\/\s*l|\/\s*liter))/gi, '$1,$2');
-
-    // Remove spaces around comma/dot inside numbers: "84, 30" → "84,30" | "1. 719" → "1.719"
+    // Remove spaces around comma/dot inside numbers: "84, 30" → "84,30"
     s = s.replace(/(\d)\s*([,\.])\s*(\d)/g, '$1$2$3');
 
-    // Normalize multiple spaces
+    // Fix spaced cents: "84 30 EUR" → "84,30 EUR" | "49 04 L" → "49,04 L"
+    // (only when followed by currency/unit hints)
+    s = s.replace(/\b(\d{1,4})\s+(\d{2})\b(?=\s*(?:€|eur|euro|l\b|liter\b|\/\s*l|\/\s*liter))/gi, '$1,$2');
+
+    // Fix price-per-liter spaced thousandths: "1 719 EUR/L" → "1,719 EUR/L"
+    s = s.replace(/\b(\d)\s+(\d{3})\b(?=\s*(?:€|eur|euro)?\s*\/\s*[lL]\b)/g, '$1,$2');
+
+    // Collapse whitespace
     s = s.replace(/[ \t]{2,}/g, ' ');
+
     return s;
   }
+
 
   // ── UI Controller ───────────────────────────────────────────
 
   function openOverlay() {
     // Reset state
-    const cam = document.getElementById('ocr-file-camera');
-    const gal = document.getElementById('ocr-file-gallery');
-    if (cam) cam.value = '';
-    if (gal) gal.value = '';
+    document.getElementById('ocr-file-input').value = '';
     document.getElementById('ocr-img-preview-wrap').style.display = 'none';
     document.getElementById('ocr-result-section').style.display = 'none';
     document.getElementById('ocr-progress-wrap').style.display = 'none';
@@ -386,6 +408,6 @@ const OCR = (() => {
 
 })();
 
+
 // Wichtig für Android/Samsung + inline onclick="OCR.openOverlay()"
-// (sonst kann OCR im Modul-Scope hängen und der Button wirkt "tot")
 window.OCR = OCR;
