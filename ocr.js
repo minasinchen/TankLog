@@ -471,95 +471,42 @@ const OCR = (() => {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Billladen mit korrekter EXIF-Orientierung + Vorverarbeitung
+  // Billladen — KEIN automatisches Drehen
   // ─────────────────────────────────────────────────────────────
 
-  /**
-   * Liest EXIF-Orientation direkt aus JPEG-Bytes.
-   * Gibt 1–8 zurück (1=normal, 3=180°, 6=90°CW, 8=90°CCW).
-   */
-  function _readExifOrientation(arrayBuffer) {
-    try {
-      const view = new DataView(arrayBuffer);
-      if (view.getUint16(0) !== 0xFFD8) return 1; // kein JPEG
-      let offset = 2;
-      while (offset < view.byteLength - 4) {
-        const marker = view.getUint16(offset); offset += 2;
-        if (marker === 0xFFE1) {
-          if (view.getUint32(offset + 2) !== 0x45786966) break; // "Exif"
-          const tiff = offset + 8;
-          const le   = view.getUint16(tiff) === 0x4949;
-          const ifd  = tiff + view.getUint32(tiff + 4, le);
-          const n    = view.getUint16(ifd, le);
-          for (let i = 0; i < n; i++) {
-            const base = ifd + 2 + i * 12;
-            if (view.getUint16(base, le) === 0x0112) // Orientation tag
-              return view.getUint16(base + 8, le);
-          }
-          break;
-        } else if ((marker & 0xFF00) !== 0xFF00) break;
-        else offset += view.getUint16(offset);
-      }
-    } catch (_) {}
-    return 1;
-  }
-
-  /**
-   * Dreht/spiegelt ein ImageBitmap gemäß EXIF-Orientation auf ein Canvas.
-   */
-  function _applyOrientation(bmp, orientation) {
-    const sw = bmp.width, sh = bmp.height;
-    const swap = orientation >= 5; // 5–8 tauschen W und H
-    const cw = swap ? sh : sw;
-    const ch = swap ? sw : sh;
+  async function _loadImageFixed(file) {
+    const bmp = await createImageBitmap(file);
     const c = document.createElement('canvas');
-    c.width = cw; c.height = ch;
-    const ctx = c.getContext('2d');
-    // Transformationsmatrix je Orientation-Wert (EXIF-Standard)
-    switch (orientation) {
-      case 2: ctx.transform(-1, 0,  0,  1, cw,  0);  break;
-      case 3: ctx.transform(-1, 0,  0, -1, cw, ch);  break;
-      case 4: ctx.transform( 1, 0,  0, -1,  0, ch);  break;
-      case 5: ctx.transform( 0, 1,  1,  0,  0,  0);  break;
-      case 6: ctx.transform( 0, 1, -1,  0, ch,  0);  break;
-      case 7: ctx.transform( 0,-1, -1,  0, ch, cw);  break;
-      case 8: ctx.transform( 0,-1,  1,  0,  0, cw);  break;
-      default: break;
-    }
-    ctx.drawImage(bmp, 0, 0);
+    c.width = bmp.width; c.height = bmp.height;
+    c.getContext('2d').drawImage(bmp, 0, 0);
     return c;
   }
 
-  /**
-   * Lädt eine Bilddatei mit garantiert korrekter Orientierung.
-   *
-   * STRATEGIE: EXIF manuell aus Bytes lesen + createImageBitmap mit
-   * imageOrientation:'none' → Browser dreht NIE automatisch → wir drehen
-   * einmal kontrolliert selbst. Funktioniert auf allen Plattformen identisch:
-   * Desktop Chrome, Android Chrome, Samsung Internet, Safari iOS.
-   */
-  async function _loadImageFixed(file) {
-    const buf = await file.arrayBuffer();
-    const orientation = _readExifOrientation(buf);
-
-    // imageOrientation:'none' deaktiviert Browser-Auto-Korrektur zuverlässig.
-    // Fallback: ohne Option (ältere Browser ignorieren das Argument sowieso).
-    let bmp;
-    try {
-      bmp = await createImageBitmap(new Blob([buf], { type: file.type }),
-                                    { imageOrientation: 'none' });
-    } catch (_) {
-      bmp = await createImageBitmap(new Blob([buf], { type: file.type }));
-    }
-
-    if (orientation === 1) {
-      // Kein Drehen nötig — trotzdem auf Canvas für einheitlichen Rückgabetyp
-      const c = document.createElement('canvas');
-      c.width = bmp.width; c.height = bmp.height;
-      c.getContext('2d').drawImage(bmp, 0, 0);
-      return c;
-    }
-    return _applyOrientation(bmp, orientation);
+  /** Dreht _srcBitmap um 90° im Uhrzeigersinn und aktualisiert die Crop-Punkte */
+  function rotateSrc90() {
+    if (!_srcBitmap) return;
+    const c = document.createElement('canvas');
+    c.width  = _srcBitmap.height;
+    c.height = _srcBitmap.width;
+    const ctx = c.getContext('2d');
+    ctx.translate(c.width, 0);
+    ctx.rotate(Math.PI / 2);
+    ctx.drawImage(_srcBitmap, 0, 0);
+    createImageBitmap(c).then(bmp => {
+      _srcBitmap = bmp;
+      _srcW = bmp.width;
+      _srcH = bmp.height;
+      // Crop-Punkte zurücksetzen
+      const mx = Math.round(_srcW * 0.06), my = Math.round(_srcH * 0.04);
+      _cropPts = [
+        { x: mx,       y: my },
+        { x: _srcW-mx, y: my },
+        { x: _srcW-mx, y: _srcH-my },
+        { x: mx,       y: _srcH-my },
+      ];
+      _autoGuessCorners();
+      _renderCrop();
+    });
   }
 
   /**
@@ -719,6 +666,13 @@ const OCR = (() => {
     const row = document.createElement('div');
     row.style.cssText = 'display:flex;gap:8px;margin-top:8px';
 
+    const btnRotate = document.createElement('button');
+    btnRotate.type = 'button'; btnRotate.className = 'btn btn-secondary';
+    btnRotate.style.flex = '1';
+    btnRotate.title = 'Bild 90° drehen';
+    btnRotate.innerHTML = '↻ Drehen';
+    btnRotate.onclick = () => rotateSrc90();
+
     const btnAuto = document.createElement('button');
     btnAuto.type = 'button'; btnAuto.className = 'btn btn-secondary'; btnAuto.style.flex = '1';
     btnAuto.textContent = 'Auto-Ecken';
@@ -734,7 +688,7 @@ const OCR = (() => {
     btnOff.textContent = 'Ohne Ausrichten';
     btnOff.onclick = () => scanOriginal();
 
-    row.append(btnAuto, btnScan, btnOff);
+    row.append(btnRotate, btnAuto, btnScan, btnOff);
     wrap.append(canvas, info, row);
 
     // ── Handles ──────────────────────────────────────────────────
@@ -1302,6 +1256,7 @@ const OCR = (() => {
     openOverlay, closeOverlay, handleFile, transfer,
     parse, recognize,
     scanCropped, scanOriginal,
+    rotateSrc90,
     getLastText, getLastParsed,
   };
 
