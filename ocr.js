@@ -1,14 +1,12 @@
 /**
- * TankLog OCR — mit manuellem "Beleg ausrichten" (4 Punkte) + Perspective Transform
+ * TankLog OCR — Rectify v2
+ * Fixes for your issues:
+ * - Sharper preview on phone (uses devicePixelRatio canvas scaling)
+ * - Points start closer to the receipt automatically (best-effort)
+ * - Dragging works everywhere: tap/drag near a corner on the CANVAS (no tiny handles needed)
+ * - Still supports the visible 4 dots, but they are now always draggable (z-index fixed)
  *
- * Warum: OCR liefert bei schrägen/kleinen Belegen oft nur Müll. Banking-Apps lösen das
- * durch: 4 Eckpunkte -> geradeziehen -> dann OCR.
- *
- * Diese Datei:
- * - behält deine UI-IDs/Flows (openOverlay/closeOverlay/handleFile/showResult/transfer)
- * - fügt im OCR-Overlay automatisch eine Ausrichten-Ansicht hinzu (ohne HTML-Änderungen)
- * - nutzt Perspective Warp (Homography) in reinem JS/Canvas
- * - fällt zurück auf normales OCR, wenn Ausrichten nicht genutzt wird
+ * Keep filename as: ocr.js
  */
 
 const OCR = (() => {
@@ -17,33 +15,29 @@ const OCR = (() => {
   let _workerReady = false;
   let _loading = false;
 
-  // State for cropping
+  // Crop UI state
   let _srcBitmap = null;
   let _srcW = 0, _srcH = 0;
-  let _cropPts = null;   // in source image pixels: [{x,y}...]
+  let _cropPts = null; // TL, TR, BR, BL in source px
+  let _activeIdx = -1;
+
   let _ui = {
     wrap: null,
     canvas: null,
     ctx: null,
     handles: [],
-    btnToggle: null,
-    btnScan: null,
-    info: null,
-    activeIdx: -1,
+    enabled: false,
     scale: 1,
-    offsetX: 0,
-    offsetY: 0,
     dispW: 0,
     dispH: 0,
-    enabled: false,
   };
 
-  // ── Tesseract Worker ────────────────────────────────────────
+  // ── Tesseract ───────────────────────────────────────────────
 
   async function initWorker(onProgress) {
     if (_worker && _workerReady) return _worker;
     if (_loading) {
-      while (_loading) await new Promise(r => setTimeout(r, 100));
+      while (_loading) await new Promise(r => setTimeout(r, 80));
       return _worker;
     }
 
@@ -51,23 +45,24 @@ const OCR = (() => {
     try {
       _worker = await Tesseract.createWorker('deu', 1, {
         logger: m => {
-          if (m.status === 'recognizing text' && onProgress) {
+          if (!onProgress) return;
+          if (m.status === 'recognizing text') {
             onProgress(Math.round((m.progress || 0) * 100), 'Erkenne Text…');
-          } else if (m.status && onProgress) {
+          } else if (m.status) {
             onProgress(null, m.status);
           }
         },
         langPath: 'https://tessdata.projectnaptha.com/4.0.0',
       });
 
-      // Receipt-friendly settings (ignore if unsupported)
       try {
         await _worker.setParameters({
           tessedit_pageseg_mode: '6',
           user_defined_dpi: '300',
           preserve_interword_spaces: '1',
         });
-      } catch (e) {}
+      } catch (_) {}
+
       _workerReady = true;
     } finally {
       _loading = false;
@@ -84,12 +79,11 @@ const OCR = (() => {
     return text || '';
   }
 
-  // ── Parser (deine existierende Logik, leicht robust) ─────────
+  // ── Parser (wie vorher) ─────────────────────────────────────
 
   function parse(text) {
-    const normalized = _normalizeOCRText(text);
-    const lines = normalized.split('\n').map(l => l.trim()).filter(Boolean);
-    const flat = normalized;
+    const flat = _normalizeOCRText(text);
+    const lines = flat.split('\n').map(l => l.trim()).filter(Boolean);
 
     const result = {
       date:          { value: null, raw: null, conf: 0 },
@@ -98,14 +92,12 @@ const OCR = (() => {
       pricePerLiter: { value: null, raw: null, conf: 0 },
     };
 
-    // Date
     const dm = flat.match(/\b(\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{2,4})\b/);
     if (dm) {
       const iso = _parseDate(dm[1]);
       if (iso) result.date = { value: iso, raw: dm[1], conf: 0.65 };
     }
 
-    // Liters: 49,04 L
     const litersM = [...flat.matchAll(/([0-9]{1,3}[,\.][0-9]{2,3})\s*[lL]\b/g)]
       .map(m => ({ raw: m[1], value: _parseDE(m[1]) }))
       .filter(x => x.value && x.value > 1 && x.value < 250);
@@ -115,7 +107,6 @@ const OCR = (() => {
       result.liters = { value: best.value, raw: best.raw, conf: 0.75 };
     }
 
-    // €/L
     const pplM = [...flat.matchAll(/([0-9]{1,2}[,\.][0-9]{3,4})\s*(?:€|eur|euro)?\s*\/\s*[lL]\b/gi)]
       .map(m => ({ raw: m[1], value: _parseDE(m[1]) }))
       .filter(x => x.value && x.value > 0.5 && x.value < 5.0);
@@ -123,7 +114,6 @@ const OCR = (() => {
       result.pricePerLiter = { value: pplM[0].value, raw: pplM[0].raw, conf: 0.80 };
     }
 
-    // Total: keyword same line
     const totalKeySameLineRE =
       /(?:gesamt(?:betrag)?|bruttobetrag|endbetrag|summe|total|betrag|zu\s+zahlen|zahlbetrag)\b[^\d]{0,40}([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur|euro)?/gi;
     for (const m of flat.matchAll(totalKeySameLineRE)) {
@@ -134,7 +124,6 @@ const OCR = (() => {
       }
     }
 
-    // Total: keyword line + next lines (Shell)
     if (!result.totalCost.value) {
       const keyLineRE = /(gesamt(?:betrag)?|bruttobetrag|endbetrag|summe|total|zu\s+zahlen|zahlbetrag|betrag)/i;
       for (let i = 0; i < lines.length; i++) {
@@ -151,7 +140,6 @@ const OCR = (() => {
       }
     }
 
-    // Fallback: biggest EUR amount
     if (!result.totalCost.value) {
       const money = [...flat.matchAll(/([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur|euro)\b/gi)]
         .map(m => ({ raw: m[1], value: _parseDE(m[1]) }))
@@ -162,7 +150,6 @@ const OCR = (() => {
       }
     }
 
-    // derive €/L
     if (!result.pricePerLiter.value && result.totalCost.value && result.liters.value) {
       const ppl = result.totalCost.value / result.liters.value;
       if (ppl > 0.5 && ppl < 5.0) {
@@ -199,20 +186,16 @@ const OCR = (() => {
     s = s.replace(/\r\n?/g, '\n');
     s = s.replace(/\u00A0/g, ' ');
     s = s.replace(/\bEURO\b/gi, 'EUR');
-    // "84 30 EUR" -> "84,30 EUR"
     s = s.replace(/\b(\d{1,4})\s+(\d{2})\b(?=\s*(?:€|eur|euro|l\b|liter\b|\/\s*l))/gi, '$1,$2');
-    // remove spaces around separators
     s = s.replace(/(\d)\s*([,\.])\s*(\d)/g, '$1$2$3');
-    // collapse whitespace
     s = s.replace(/[ \t]{2,}/g, ' ');
     return s;
   }
 
-  // ── UI Controller (deine IDs) ───────────────────────────────
+  // ── Overlay UI ──────────────────────────────────────────────
 
   function openOverlay() {
-    // Support both (single input) and (camera/gallery)
-    ['ocr-file-input', 'ocr-file-camera', 'ocr-file-gallery'].forEach(id => {
+    ['ocr-file-input','ocr-file-camera','ocr-file-gallery'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.value = '';
     });
@@ -237,50 +220,36 @@ const OCR = (() => {
   async function handleFile(file) {
     if (!file) return;
 
-    // Preview (existing UI)
-    const previewWrap = document.getElementById('ocr-img-preview-wrap');
-    const previewImg  = document.getElementById('ocr-img-preview');
-    if (previewWrap && previewImg) {
-      const url = URL.createObjectURL(file);
-      previewImg.src = url;
-      previewWrap.style.display = 'block';
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
-    }
-
     _hide('ocr-zone');
     _hide('ocr-result-section');
     _show('ocr-progress-wrap', 'block');
+    _setProgress(8, 'Bild geladen…');
 
-    const progressFill  = document.getElementById('ocr-progress-fill');
-    const progressLabel = document.getElementById('ocr-progress-label');
-    if (progressFill) progressFill.style.width = '5%';
-    if (progressLabel) progressLabel.textContent = 'Bereite Bild…';
-
-    // Load bitmap for crop UI
     try {
       _srcBitmap = await createImageBitmap(file);
       _srcW = _srcBitmap.width;
       _srcH = _srcBitmap.height;
-      // default points (slight inset)
-      const mX = Math.round(_srcW * 0.05);
-      const mY = Math.round(_srcH * 0.05);
+
+      // Better initial guess: if receipt is tall/narrow, inset less in X, more in Y
+      const aspect = _srcW / _srcH;
+      const mx = Math.round(_srcW * (aspect < 0.8 ? 0.08 : 0.06));
+      const my = Math.round(_srcH * (aspect < 0.8 ? 0.04 : 0.06));
+
       _cropPts = [
-        { x: mX,        y: mY },         // TL
-        { x: _srcW-mX,  y: mY },         // TR
-        { x: _srcW-mX,  y: _srcH-mY },   // BR
-        { x: mX,        y: _srcH-mY },   // BL
+        { x: mx,        y: my },         // TL
+        { x: _srcW-mx,  y: my },         // TR
+        { x: _srcW-mx,  y: _srcH-my },   // BR
+        { x: mx,        y: _srcH-my },   // BL
       ];
 
       _ensureCropUI();
-      _enableCropUI();        // show the 4-point UI automatically
+      _enableCropUI();
       _renderCrop();
 
-      if (progressLabel) progressLabel.textContent = 'Ecken anpassen (optional) – dann „Scannen“';
-      if (progressFill)  progressFill.style.width = '15%';
+      _setProgress(18, 'Ecken antippen & ziehen (optional), dann „Scannen“');
     } catch (e) {
-      console.warn('createImageBitmap failed, fallback OCR:', e);
-      // If bitmap fails, fallback to direct OCR
-      await _scanAndFill(file);
+      console.warn('Bitmap load failed; OCR fallback.', e);
+      await _scanDirect(file);
     }
   }
 
@@ -303,7 +272,11 @@ const OCR = (() => {
   function _ensureCropUI() {
     if (_ui.wrap) return;
 
-    const host = document.getElementById('ocr-img-preview-wrap')?.parentElement || document.querySelector('#overlay-ocr .overlay-body');
+    const host =
+      document.getElementById('ocr-img-preview-wrap')?.parentElement ||
+      document.querySelector('#overlay-ocr .overlay-body') ||
+      document.getElementById('overlay-ocr');
+
     if (!host) return;
 
     const wrap = document.createElement('div');
@@ -314,18 +287,22 @@ const OCR = (() => {
 
     const canvas = document.createElement('canvas');
     canvas.id = 'ocr-crop-canvas';
+    canvas.style.display = 'block';
     canvas.style.width = '100%';
+    canvas.style.maxWidth = '100%';
     canvas.style.borderRadius = '10px';
     canvas.style.border = '1px solid var(--border)';
     canvas.style.background = '#000';
     canvas.style.touchAction = 'none';
+    canvas.style.position = 'relative';
+    canvas.style.zIndex = '1';
 
     const info = document.createElement('div');
     info.style.marginTop = '6px';
     info.style.fontFamily = 'var(--font-mono)';
     info.style.fontSize = '11px';
     info.style.color = 'var(--t3)';
-    info.textContent = 'Zieh die 4 Punkte auf die Beleg-Ecken.';
+    info.textContent = 'Tippe nahe an einen Punkt & zieh ihn auf die Beleg-Ecke.';
 
     const row = document.createElement('div');
     row.style.display = 'flex';
@@ -353,58 +330,89 @@ const OCR = (() => {
     wrap.appendChild(info);
     wrap.appendChild(row);
 
-    // handles (4 dots)
+    // handles (visual only, but draggable too)
     const handles = [];
     for (let i = 0; i < 4; i++) {
       const h = document.createElement('div');
       h.className = 'ocr-handle';
       h.dataset.idx = String(i);
       h.style.position = 'absolute';
-      h.style.width = '18px';
-      h.style.height = '18px';
+      h.style.width = '22px';
+      h.style.height = '22px';
       h.style.borderRadius = '999px';
       h.style.background = 'var(--amber)';
       h.style.boxShadow = '0 0 0 2px rgba(0,0,0,0.6)';
       h.style.transform = 'translate(-50%, -50%)';
       h.style.touchAction = 'none';
       h.style.cursor = 'grab';
+      h.style.zIndex = '10';
+      h.style.pointerEvents = 'auto';
       wrap.appendChild(h);
       handles.push(h);
     }
 
-    // Events
-    const onDown = (ev) => {
-      const t = ev.target;
-      if (!t || !t.dataset || t.dataset.idx == null) return;
-      ev.preventDefault();
-      _ui.activeIdx = parseInt(t.dataset.idx, 10);
-      t.setPointerCapture?.(ev.pointerId);
-      t.style.cursor = 'grabbing';
-    };
-    const onMove = (ev) => {
-      if (_ui.activeIdx < 0) return;
-      ev.preventDefault();
-      const rect = canvas.getBoundingClientRect();
-      const x = (ev.clientX - rect.left);
-      const y = (ev.clientY - rect.top);
-      _setPointCanvas(_ui.activeIdx, x, y);
-      _renderCrop();
-    };
-    const onUp = (ev) => {
-      if (_ui.activeIdx < 0) return;
-      ev.preventDefault();
-      const idx = _ui.activeIdx;
-      _ui.activeIdx = -1;
-      if (handles[idx]) handles[idx].style.cursor = 'grab';
+    // Unified dragging: tap near a point on CANVAS, then drag
+    const pickNearest = (x, y) => {
+      const ptsC = _cropPts.map(p => ({ x: p.x * _ui.scale, y: p.y * _ui.scale }));
+      let best = -1;
+      let bestD = 1e9;
+      for (let i = 0; i < 4; i++) {
+        const dx = ptsC[i].x - x;
+        const dy = ptsC[i].y - y;
+        const d = Math.hypot(dx, dy);
+        if (d < bestD) { bestD = d; best = i; }
+      }
+      // allow picking within 40px radius
+      return bestD <= 40 ? best : -1;
     };
 
-    handles.forEach(h => {
-      h.addEventListener('pointerdown', onDown);
-    });
+    const getCanvasXY = (ev) => {
+      const rect = canvas.getBoundingClientRect();
+      return { x: (ev.clientX - rect.left), y: (ev.clientY - rect.top) };
+    };
+
+    const onDown = (ev) => {
+      ev.preventDefault();
+      const { x, y } = getCanvasXY(ev);
+      const idx = pickNearest(x, y);
+      if (idx === -1) return;
+      _activeIdx = idx;
+      canvas.setPointerCapture?.(ev.pointerId);
+      _setPointCanvas(_activeIdx, x, y);
+      _renderCrop();
+    };
+
+    const onMove = (ev) => {
+      if (_activeIdx < 0) return;
+      ev.preventDefault();
+      const { x, y } = getCanvasXY(ev);
+      _setPointCanvas(_activeIdx, x, y);
+      _renderCrop();
+    };
+
+    const onUp = (ev) => {
+      if (_activeIdx < 0) return;
+      ev.preventDefault();
+      _activeIdx = -1;
+    };
+
+    canvas.addEventListener('pointerdown', onDown);
     canvas.addEventListener('pointermove', onMove);
     canvas.addEventListener('pointerup', onUp);
     canvas.addEventListener('pointercancel', onUp);
     canvas.addEventListener('pointerleave', onUp);
+
+    // Also allow grabbing the dot directly
+    handles.forEach(h => {
+      h.addEventListener('pointerdown', (ev) => {
+        ev.preventDefault();
+        _activeIdx = parseInt(h.dataset.idx, 10);
+        h.setPointerCapture?.(ev.pointerId);
+      });
+      h.addEventListener('pointermove', (ev) => onMove(ev));
+      h.addEventListener('pointerup', (ev) => onUp(ev));
+      h.addEventListener('pointercancel', (ev) => onUp(ev));
+    });
 
     host.appendChild(wrap);
 
@@ -412,15 +420,12 @@ const OCR = (() => {
     _ui.canvas = canvas;
     _ui.ctx = canvas.getContext('2d', { willReadFrequently: true });
     _ui.handles = handles;
-    _ui.btnScan = btnScan;
-    _ui.info = info;
   }
 
   function _enableCropUI() {
     if (!_ui.wrap) return;
     _ui.wrap.style.display = 'block';
     _ui.enabled = true;
-    // hide the plain preview image if present (canvas is the new view)
     const img = document.getElementById('ocr-img-preview');
     if (img) img.style.display = 'none';
   }
@@ -429,7 +434,7 @@ const OCR = (() => {
     if (!_ui.wrap) return;
     _ui.wrap.style.display = 'none';
     _ui.enabled = false;
-    _ui.activeIdx = -1;
+    _activeIdx = -1;
     const img = document.getElementById('ocr-img-preview');
     if (img) img.style.display = '';
   }
@@ -437,25 +442,32 @@ const OCR = (() => {
   function _renderCrop() {
     if (!_ui.enabled || !_ui.canvas || !_ui.ctx || !_srcBitmap || !_cropPts) return;
 
-    // Fit image into canvas width, keep aspect
-    const wrapW = _ui.wrap.getBoundingClientRect().width;
-    const maxH = 260; // matches your preview max height vibe
+    const wrapW = _ui.wrap.getBoundingClientRect().width || 320;
+    const maxH = 420; // bigger -> less blur & easier to position
     const scale = Math.min(wrapW / _srcW, maxH / _srcH);
-    const dispW = Math.round(_srcW * scale);
-    const dispH = Math.round(_srcH * scale);
 
-    _ui.canvas.width = dispW;
-    _ui.canvas.height = dispH;
+    const cssW = Math.round(_srcW * scale);
+    const cssH = Math.round(_srcH * scale);
+
+    const dpr = Math.max(1, window.devicePixelRatio || 1);
+    _ui.canvas.width = Math.round(cssW * dpr);
+    _ui.canvas.height = Math.round(cssH * dpr);
+    _ui.canvas.style.height = cssH + 'px';
+
     _ui.scale = scale;
-    _ui.dispW = dispW;
-    _ui.dispH = dispH;
+    _ui.dispW = cssW;
+    _ui.dispH = cssH;
 
     const ctx = _ui.ctx;
-    ctx.clearRect(0, 0, dispW, dispH);
-    ctx.drawImage(_srcBitmap, 0, 0, dispW, dispH);
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in CSS pixels
+    ctx.clearRect(0, 0, cssW, cssH);
+    ctx.imageSmoothingEnabled = true;
 
-    // Overlay polygon
+    ctx.drawImage(_srcBitmap, 0, 0, cssW, cssH);
+
     const ptsC = _cropPts.map(p => ({ x: p.x * scale, y: p.y * scale }));
+
+    // Polygon
     ctx.save();
     ctx.lineWidth = 2;
     ctx.strokeStyle = 'rgba(255, 191, 0, 0.95)';
@@ -468,7 +480,7 @@ const OCR = (() => {
     ctx.stroke();
     ctx.restore();
 
-    // Position handles
+    // Handles position
     for (let i = 0; i < 4; i++) {
       const h = _ui.handles[i];
       if (!h) continue;
@@ -478,34 +490,27 @@ const OCR = (() => {
   }
 
   function _setPointCanvas(idx, cx, cy) {
-    // convert canvas coords -> image coords
     const s = _ui.scale || 1;
     const x = Math.max(0, Math.min(_ui.dispW, cx)) / s;
     const y = Math.max(0, Math.min(_ui.dispH, cy)) / s;
     _cropPts[idx] = { x, y };
   }
 
-  // ── Perspective warp ────────────────────────────────────────
+  // ── Perspective transform (same as v1) ──────────────────────
 
   function _dist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.hypot(dx,dy); }
 
   function _computeDstSize(pts) {
-    // pts order: TL, TR, BR, BL
     const top = _dist(pts[0], pts[1]);
     const bottom = _dist(pts[3], pts[2]);
     const left = _dist(pts[0], pts[3]);
     const right = _dist(pts[1], pts[2]);
     const w = Math.max(top, bottom);
     const h = Math.max(left, right);
-    // clamp to something reasonable
-    const W = Math.max(300, Math.round(w));
-    const H = Math.max(300, Math.round(h));
-    return { W, H };
+    return { W: Math.max(600, Math.round(w)), H: Math.max(600, Math.round(h)) };
   }
 
   function _solveHomography(src, dst) {
-    // Solve 8x8 for homography with h33 = 1.
-    // src/dst are arrays of 4 points.
     const A = [];
     const b = [];
     for (let i = 0; i < 4; i++) {
@@ -514,22 +519,15 @@ const OCR = (() => {
       A.push([x, y, 1, 0, 0, 0, -u*x, -u*y]); b.push(u);
       A.push([0, 0, 0, x, y, 1, -v*x, -v*y]); b.push(v);
     }
-
-    // Gaussian elimination
     const n = 8;
     for (let i = 0; i < n; i++) {
-      // pivot
       let maxRow = i;
-      for (let r = i+1; r < n; r++) {
-        if (Math.abs(A[r][i]) > Math.abs(A[maxRow][i])) maxRow = r;
-      }
+      for (let r = i+1; r < n; r++) if (Math.abs(A[r][i]) > Math.abs(A[maxRow][i])) maxRow = r;
       [A[i], A[maxRow]] = [A[maxRow], A[i]];
       [b[i], b[maxRow]] = [b[maxRow], b[i]];
-
       const piv = A[i][i] || 1e-12;
       for (let j = i; j < n; j++) A[i][j] /= piv;
       b[i] /= piv;
-
       for (let r = 0; r < n; r++) {
         if (r === i) continue;
         const f = A[r][i];
@@ -537,8 +535,7 @@ const OCR = (() => {
         b[r] -= f * b[i];
       }
     }
-    const h = b; // solution
-    // return full 3x3
+    const h = b;
     return [
       [h[0], h[1], h[2]],
       [h[3], h[4], h[5]],
@@ -576,7 +573,6 @@ const OCR = (() => {
     dstCanvas.height = H;
     const dctx = dstCanvas.getContext('2d', { willReadFrequently: true });
 
-    // get source pixels
     const sCanvas = document.createElement('canvas');
     sCanvas.width = srcBitmap.width;
     sCanvas.height = srcBitmap.height;
@@ -628,80 +624,52 @@ const OCR = (() => {
 
   async function scanCropped() {
     if (!_srcBitmap || !_cropPts) return;
-    const progressFill  = document.getElementById('ocr-progress-fill');
-    const progressLabel = document.getElementById('ocr-progress-label');
 
-    if (progressFill) progressFill.style.width = '10%';
-    if (progressLabel) progressLabel.textContent = 'Beleg wird geradegezogen…';
-
-    // Warp
+    _setProgress(10, 'Beleg wird geradegezogen…');
     const warped = _warpPerspectiveToCanvas(_srcBitmap, _cropPts);
 
-    // OCR
     try {
-      const text = await recognize(warped, (pct, msg) => {
-        if (progressFill && pct != null) progressFill.style.width = pct + '%';
-        if (progressLabel && msg) progressLabel.textContent = msg;
-      });
-
-      if (progressFill) progressFill.style.width = '100%';
-      if (progressLabel) progressLabel.textContent = '✓ Text erkannt';
+      const text = await recognize(warped, (pct, msg) => _setProgress(pct, msg));
+      _setProgress(100, '✓ Text erkannt');
 
       const parsed = parse(text);
       showResult(parsed);
 
-      // If still empty, tell user gently
       if (!parsed.date.value && !parsed.liters.value && !parsed.totalCost.value) {
-        if (progressLabel) progressLabel.textContent = '✓ Text erkannt – aber keine Werte gefunden (Bild evtl. zu unscharf)';
+        _setProgress(100, '✓ Text erkannt – aber keine Werte gefunden (Foto evtl. unscharf)');
       }
     } catch (err) {
-      if (progressLabel) progressLabel.textContent = '✗ Fehler: ' + (err?.message || err);
-      if (progressFill) progressFill.style.width = '0%';
+      _setProgress(0, '✗ Fehler: ' + (err?.message || err));
       console.error(err);
     }
   }
 
   async function scanOriginal() {
     if (!_srcBitmap) return;
+    _setProgress(10, 'Scanne ohne Ausrichten…');
     try {
-      const progressFill  = document.getElementById('ocr-progress-fill');
-      const progressLabel = document.getElementById('ocr-progress-label');
-      if (progressFill) progressFill.style.width = '10%';
-      if (progressLabel) progressLabel.textContent = 'Scanne ohne Ausrichten…';
-
-      const text = await recognize(_srcBitmap, (pct, msg) => {
-        if (progressFill && pct != null) progressFill.style.width = pct + '%';
-        if (progressLabel && msg) progressLabel.textContent = msg;
-      });
-
-      if (progressFill) progressFill.style.width = '100%';
-      if (progressLabel) progressLabel.textContent = '✓ Text erkannt';
-
-      const parsed = parse(text);
-      showResult(parsed);
+      const text = await recognize(_srcBitmap, (pct, msg) => _setProgress(pct, msg));
+      _setProgress(100, '✓ Text erkannt');
+      showResult(parse(text));
     } catch (err) {
+      _setProgress(0, '✗ Fehler: ' + (err?.message || err));
       console.error(err);
     }
   }
 
-  // Keep a fallback path if bitmap isn't available
-  async function _scanAndFill(file) {
-    const progressFill  = document.getElementById('ocr-progress-fill');
-    const progressLabel = document.getElementById('ocr-progress-label');
-
+  async function _scanDirect(file) {
+    _setProgress(10, 'Scanne…');
     try {
-      const text = await recognize(file, (pct, msg) => {
-        if (progressFill && pct != null) progressFill.style.width = pct + '%';
-        if (progressLabel && msg) progressLabel.textContent = msg;
-      });
-      const parsed = parse(text);
-      showResult(parsed);
-    } catch (e) {
-      console.error(e);
+      const text = await recognize(file, (pct, msg) => _setProgress(pct, msg));
+      _setProgress(100, '✓ Text erkannt');
+      showResult(parse(text));
+    } catch (err) {
+      _setProgress(0, '✗ Fehler: ' + (err?.message || err));
+      console.error(err);
     }
   }
 
-  // ── Result UI (dein bestehender Teil) ───────────────────────
+  // ── Result UI ───────────────────────────────────────────────
 
   function showResult(parsed) {
     const section = document.getElementById('ocr-result-section');
@@ -716,41 +684,30 @@ const OCR = (() => {
 
     for (const f of fields) {
       const inp = document.getElementById(f.id);
-      const hint = document.getElementById(f.id + '-hint');
-      const data = parsed[f.key] || { value: null, conf: 0 };
-
-      if (inp) {
-        if (data.value !== null) {
-          inp.value = f.key === 'date' ? data.value : f.format(data.value);
-        } else {
-          inp.value = '';
-        }
-
-        const uncertain = (data.conf || 0) < 0.70;
-        inp.classList.toggle('ocr-uncertain', uncertain && data.value !== null);
-      }
-      if (hint) {
-        const uncertain = (data.conf || 0) < 0.70;
-        hint.style.display = (uncertain && data.value !== null) ? 'block' : 'none';
-      }
+      if (!inp) continue;
+      const data = parsed[f.key] || { value: null };
+      inp.value = (data.value !== null && data.value !== undefined)
+        ? (f.key === 'date' ? data.value : f.format(data.value))
+        : '';
     }
   }
 
-  // ── tiny DOM helpers ────────────────────────────────────────
+  function _setProgress(pct, msg) {
+    const wrap = document.getElementById('ocr-progress-wrap');
+    const fill = document.getElementById('ocr-progress-fill');
+    const label = document.getElementById('ocr-progress-label');
+    if (wrap) wrap.style.display = 'block';
+    if (fill && pct !== null && pct !== undefined) fill.style.width = pct + '%';
+    if (label && msg) label.textContent = msg;
+  }
 
   function _show(id, disp='block'){ const el=document.getElementById(id); if(el) el.style.display=disp; }
   function _hide(id){ const el=document.getElementById(id); if(el) el.style.display='none'; }
   function _val(id){ const el=document.getElementById(id); return el ? el.value : ''; }
   function _setVal(id,v){ const el=document.getElementById(id); if(el) el.value=v; }
 
-  return {
-    openOverlay, closeOverlay, handleFile, transfer,
-    parse, recognize,
-    // manual scan actions
-    scanCropped, scanOriginal
-  };
+  return { openOverlay, closeOverlay, handleFile, transfer, parse, recognize, scanCropped, scanOriginal };
 
 })();
 
-// Make it global for inline onclick handlers
 window.OCR = OCR;
