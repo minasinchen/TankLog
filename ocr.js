@@ -1,38 +1,32 @@
 /**
- * TankLog OCR — Rectify v2
- * Fixes for your issues:
- * - Sharper preview on phone (uses devicePixelRatio canvas scaling)
- * - Points start closer to the receipt automatically (best-effort)
- * - Dragging works everywhere: tap/drag near a corner on the CANVAS (no tiny handles needed)
- * - Still supports the visible 4 dots, but they are now always draggable (z-index fixed)
+ * TankLog OCR — Rectify v3 (Samsung/Phone friendly)
  *
- * Keep filename as: ocr.js
+ * What’s included:
+ * ✅ 4-point "Beleg ausrichten" (perspective transform) like banking apps
+ * ✅ Sharp preview on phone (devicePixelRatio canvas)
+ * ✅ Dragging works reliably (tap near point OR drag the dot)
+ * ✅ Debug: last OCR raw text stored + can be shown in console
+ * ✅ Parser improvements:
+ *    - Handles liters even when OCR drops "L" or uses weird spacing (e.g. "49 04" / "49.04")
+ *    - Uses cross-checks between total / €/L / liters to pick best values
+ *
+ * IMPORTANT: Save as "ocr.js" in your repo.
  */
 
 const OCR = (() => {
 
+  // ─────────────────────────────────────────────────────────────
+  // Debug / state
+  // ─────────────────────────────────────────────────────────────
+  let _lastText = '';
+  let _lastParsed = null;
+
+  // ─────────────────────────────────────────────────────────────
+  // Tesseract worker
+  // ─────────────────────────────────────────────────────────────
   let _worker = null;
   let _workerReady = false;
   let _loading = false;
-
-  // Crop UI state
-  let _srcBitmap = null;
-  let _srcW = 0, _srcH = 0;
-  let _cropPts = null; // TL, TR, BR, BL in source px
-  let _activeIdx = -1;
-
-  let _ui = {
-    wrap: null,
-    canvas: null,
-    ctx: null,
-    handles: [],
-    enabled: false,
-    scale: 1,
-    dispW: 0,
-    dispH: 0,
-  };
-
-  // ── Tesseract ───────────────────────────────────────────────
 
   async function initWorker(onProgress) {
     if (_worker && _workerReady) return _worker;
@@ -55,9 +49,10 @@ const OCR = (() => {
         langPath: 'https://tessdata.projectnaptha.com/4.0.0',
       });
 
+      // Receipt-friendly params (ignore if unsupported)
       try {
         await _worker.setParameters({
-          tessedit_pageseg_mode: '6',
+          tessedit_pageseg_mode: '6', // block of text
           user_defined_dpi: '300',
           preserve_interword_spaces: '1',
         });
@@ -79,7 +74,28 @@ const OCR = (() => {
     return text || '';
   }
 
-  // ── Parser (wie vorher) ─────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // 4-point Rectify UI state
+  // ─────────────────────────────────────────────────────────────
+  let _srcBitmap = null;
+  let _srcW = 0, _srcH = 0;
+  let _cropPts = null; // TL, TR, BR, BL in source px
+  let _activeIdx = -1;
+
+  let _ui = {
+    wrap: null,
+    canvas: null,
+    ctx: null,
+    handles: [],
+    enabled: false,
+    scale: 1,
+    dispW: 0,
+    dispH: 0,
+  };
+
+  // ─────────────────────────────────────────────────────────────
+  // Parser (improved liters detection)
+  // ─────────────────────────────────────────────────────────────
 
   function parse(text) {
     const flat = _normalizeOCRText(text);
@@ -92,30 +108,41 @@ const OCR = (() => {
       pricePerLiter: { value: null, raw: null, conf: 0 },
     };
 
+    // DATE
     const dm = flat.match(/\b(\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{2,4})\b/);
     if (dm) {
       const iso = _parseDate(dm[1]);
-      if (iso) result.date = { value: iso, raw: dm[1], conf: 0.65 };
+      if (iso) result.date = { value: iso, raw: dm[1], conf: 0.70 };
     }
 
-    const litersM = [...flat.matchAll(/([0-9]{1,3}[,\.][0-9]{2,3})\s*[lL]\b/g)]
-      .map(m => ({ raw: m[1], value: _parseDE(m[1]) }))
-      .filter(x => x.value && x.value > 1 && x.value < 250);
-    if (litersM.length) {
-      litersM.sort((a,b) => b.value - a.value);
-      const best = litersM.find(x => x.value >= 5 && x.value <= 120) || litersM[0];
-      result.liters = { value: best.value, raw: best.raw, conf: 0.75 };
-    }
-
-    const pplM = [...flat.matchAll(/([0-9]{1,2}[,\.][0-9]{3,4})\s*(?:€|eur|euro)?\s*\/\s*[lL]\b/gi)]
+    // PRICE PER LITER
+    // strong: "1,719 EUR/L" etc
+    const pplStrong = [...flat.matchAll(/([0-9]{1,2}[,\.][0-9]{3,4})\s*(?:€|eur|euro)?\s*\/\s*[lL1I]\b/gi)]
       .map(m => ({ raw: m[1], value: _parseDE(m[1]) }))
       .filter(x => x.value && x.value > 0.5 && x.value < 5.0);
-    if (pplM.length) {
-      result.pricePerLiter = { value: pplM[0].value, raw: pplM[0].raw, conf: 0.80 };
+    if (pplStrong.length) {
+      result.pricePerLiter = { value: pplStrong[0].value, raw: pplStrong[0].raw, conf: 0.85 };
+    } else {
+      // fallback: any 1,xxx around "EUR/L" words or next to "/"
+      const pplLoose = [...flat.matchAll(/\b([0-9]{1,2}[,\.][0-9]{3})\b/g)]
+        .map(m => ({ raw: m[1], value: _parseDE(m[1]) }))
+        .filter(x => x.value && x.value > 0.8 && x.value < 3.5);
+      // If there are multiple, choose the one appearing in a line that contains "/"
+      if (pplLoose.length) {
+        let best = pplLoose[0];
+        for (const cand of pplLoose) {
+          const idx = flat.indexOf(cand.raw);
+          const windowTxt = flat.slice(Math.max(0, idx - 20), idx + 20);
+          if (/[\/\\]/.test(windowTxt)) { best = cand; break; }
+        }
+        result.pricePerLiter = { value: best.value, raw: best.raw, conf: 0.55 };
+      }
     }
 
+    // TOTAL COST
+    // keyword same line
     const totalKeySameLineRE =
-      /(?:gesamt(?:betrag)?|bruttobetrag|endbetrag|summe|total|betrag|zu\s+zahlen|zahlbetrag)\b[^\d]{0,40}([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur|euro)?/gi;
+      /(?:gesamt(?:betrag)?|bruttobetrag|endbetrag|summe|total|zu\s+zahlen|zahlbetrag|betrag)\b[^\d]{0,40}([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur|euro)?/gi;
     for (const m of flat.matchAll(totalKeySameLineRE)) {
       const v = _parseDE(m[1]);
       if (v && v > 2 && v < 1000) {
@@ -123,7 +150,7 @@ const OCR = (() => {
         break;
       }
     }
-
+    // keyword line + next lines
     if (!result.totalCost.value) {
       const keyLineRE = /(gesamt(?:betrag)?|bruttobetrag|endbetrag|summe|total|zu\s+zahlen|zahlbetrag|betrag)/i;
       for (let i = 0; i < lines.length; i++) {
@@ -139,7 +166,7 @@ const OCR = (() => {
         }
       }
     }
-
+    // biggest EUR amount fallback
     if (!result.totalCost.value) {
       const money = [...flat.matchAll(/([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur|euro)\b/gi)]
         .map(m => ({ raw: m[1], value: _parseDE(m[1]) }))
@@ -150,26 +177,88 @@ const OCR = (() => {
       }
     }
 
-    if (!result.pricePerLiter.value && result.totalCost.value && result.liters.value) {
-      const ppl = result.totalCost.value / result.liters.value;
-      if (ppl > 0.5 && ppl < 5.0) {
-        result.pricePerLiter = { value: +ppl.toFixed(4), raw: 'derived', conf: 0.50 };
+    // LITERS (this is the tricky part)
+    // 1) labeled "Menge/Liter/Volumen"
+    const litersLabelRE = /(?:menge|liter|vol(?:umen)?|mng|ltrs?)\b[^\d]{0,20}([0-9]{1,3}[,\.][0-9]{2,3})/gi;
+    for (const m of flat.matchAll(litersLabelRE)) {
+      const v = _parseDE(m[1]);
+      if (v && v > 1 && v < 250) {
+        result.liters = { value: v, raw: m[1], conf: 0.88 };
+        break;
       }
     }
+
+    // 2) classic "49,04 L"
+    if (!result.liters.value) {
+      const litersWithUnit = [...flat.matchAll(/([0-9]{1,3}[,\.][0-9]{2,3})\s*[lL]\b/g)]
+        .map(m => ({ raw: m[1], value: _parseDE(m[1]) }))
+        .filter(x => x.value && x.value > 1 && x.value < 250);
+      if (litersWithUnit.length) {
+        litersWithUnit.sort((a,b) => b.value - a.value);
+        const best = litersWithUnit.find(x => x.value >= 5 && x.value <= 120) || litersWithUnit[0];
+        result.liters = { value: best.value, raw: best.raw, conf: 0.78 };
+      }
+    }
+
+    // 3) OCR sometimes drops "L" and leaves just "49,04" near "Super/Diesel/E10/E5"
+    if (!result.liters.value) {
+      const fuelContext = /(diesel|super|e10|e5|benzin|kraftstoff|fuel)/i;
+      const candidates = [];
+      for (let i = 0; i < lines.length; i++) {
+        if (!fuelContext.test(lines[i])) continue;
+        const look = [lines[i], lines[i+1], lines[i+2]].filter(Boolean).join(' ');
+        for (const m of look.matchAll(/\b([0-9]{1,3}[,\.][0-9]{2})\b/g)) {
+          const v = _parseDE(m[1]);
+          if (v && v > 1 && v < 250) candidates.push({ raw: m[1], value: v, i });
+        }
+      }
+      if (candidates.length) {
+        // choose in passenger-car range
+        const best = candidates.find(x => x.value >= 5 && x.value <= 120) || candidates[0];
+        result.liters = { value: best.value, raw: best.raw, conf: 0.55 };
+      }
+    }
+
+    // 4) Cross-check/derive
+    // If total + €/L exist, derive liters (often most stable)
+    if ((!result.liters.value || result.liters.conf < 0.6) && result.totalCost.value && result.pricePerLiter.value) {
+      const derived = result.totalCost.value / result.pricePerLiter.value;
+      if (derived > 1 && derived < 250) {
+        // keep if better than current
+        const conf = result.liters.value ? Math.max(result.liters.conf, 0.65) : 0.72;
+        result.liters = { value: +derived.toFixed(2), raw: 'berechnet', conf };
+      }
+    }
+
+    // If liters + total exist, derive €/L
+    if (!result.pricePerLiter.value && result.totalCost.value && result.liters.value) {
+      const derived = result.totalCost.value / result.liters.value;
+      if (derived > 0.5 && derived < 5.0) {
+        result.pricePerLiter = { value: +derived.toFixed(4), raw: 'berechnet', conf: 0.55 };
+      }
+    }
+
+    // Sanity tweaks
+    if (result.liters.value && (result.liters.value < 1 || result.liters.value > 200)) result.liters.conf = Math.min(result.liters.conf, 0.25);
+    if (result.totalCost.value && (result.totalCost.value < 2 || result.totalCost.value > 500)) result.totalCost.conf = Math.min(result.totalCost.conf, 0.25);
+    if (result.pricePerLiter.value && (result.pricePerLiter.value < 0.8 || result.pricePerLiter.value > 4.0)) result.pricePerLiter.conf = Math.min(result.pricePerLiter.conf, 0.25);
 
     return result;
   }
 
   function _parseDE(s) {
     if (!s && s !== 0) return null;
-    const str = String(s).trim().replace(/\.(?=\d{3}\b)/g, '').replace(',', '.');
+    const str = String(s).trim()
+      // thousands dots: 1.234,56
+      .replace(/\.(?=\d{3}(?:\D|$))/g, '')
+      .replace(',', '.');
     const v = parseFloat(str);
     return isNaN(v) ? null : v;
   }
 
   function _parseDate(s) {
     if (!s) return null;
-    s = s.trim();
+    s = String(s).trim();
     const m = s.match(/^(\d{1,2})[.\-\/](\d{1,2})[.\-\/](\d{2,4})$/);
     if (!m) return null;
     let [, d, mo, y] = m;
@@ -183,16 +272,31 @@ const OCR = (() => {
   function _normalizeOCRText(t) {
     if (!t) return '';
     let s = String(t);
+
+    // newlines
     s = s.replace(/\r\n?/g, '\n');
     s = s.replace(/\u00A0/g, ' ');
+
+    // EUR variants
     s = s.replace(/\bEURO\b/gi, 'EUR');
-    s = s.replace(/\b(\d{1,4})\s+(\d{2})\b(?=\s*(?:€|eur|euro|l\b|liter\b|\/\s*l))/gi, '$1,$2');
+
+    // Fix spaced decimals in likely money/liter contexts:
+    // "84 90 EUR" -> "84,90 EUR" ; "49 04 L" -> "49,04 L" ; "1 719 EUR/L" -> "1,719 EUR/L"
+    s = s.replace(/\b(\d{1,4})\s+(\d{2})\b(?=\s*(?:€|eur|euro|l\b|liter\b|\/\s*[lL1I]))/gi, '$1,$2');
+    s = s.replace(/\b(\d)\s+(\d{3,4})\b(?=\s*(?:€|eur|euro)\s*\/\s*[lL1I])/gi, '$1,$2');
+
+    // remove spaces around comma/dot
     s = s.replace(/(\d)\s*([,\.])\s*(\d)/g, '$1$2$3');
+
+    // collapse whitespace
     s = s.replace(/[ \t]{2,}/g, ' ');
+
     return s;
   }
 
-  // ── Overlay UI ──────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // Overlay / UI
+  // ─────────────────────────────────────────────────────────────
 
   function openOverlay() {
     ['ocr-file-input','ocr-file-camera','ocr-file-gallery'].forEach(id => {
@@ -230,7 +334,7 @@ const OCR = (() => {
       _srcW = _srcBitmap.width;
       _srcH = _srcBitmap.height;
 
-      // Better initial guess: if receipt is tall/narrow, inset less in X, more in Y
+      // Default points (inset). User adjusts.
       const aspect = _srcW / _srcH;
       const mx = Math.round(_srcW * (aspect < 0.8 ? 0.08 : 0.06));
       const my = Math.round(_srcH * (aspect < 0.8 ? 0.04 : 0.06));
@@ -330,7 +434,7 @@ const OCR = (() => {
     wrap.appendChild(info);
     wrap.appendChild(row);
 
-    // handles (visual only, but draggable too)
+    // handles
     const handles = [];
     for (let i = 0; i < 4; i++) {
       const h = document.createElement('div');
@@ -351,7 +455,6 @@ const OCR = (() => {
       handles.push(h);
     }
 
-    // Unified dragging: tap near a point on CANVAS, then drag
     const pickNearest = (x, y) => {
       const ptsC = _cropPts.map(p => ({ x: p.x * _ui.scale, y: p.y * _ui.scale }));
       let best = -1;
@@ -362,8 +465,7 @@ const OCR = (() => {
         const d = Math.hypot(dx, dy);
         if (d < bestD) { bestD = d; best = i; }
       }
-      // allow picking within 40px radius
-      return bestD <= 40 ? best : -1;
+      return bestD <= 44 ? best : -1;
     };
 
     const getCanvasXY = (ev) => {
@@ -402,16 +504,15 @@ const OCR = (() => {
     canvas.addEventListener('pointercancel', onUp);
     canvas.addEventListener('pointerleave', onUp);
 
-    // Also allow grabbing the dot directly
     handles.forEach(h => {
       h.addEventListener('pointerdown', (ev) => {
         ev.preventDefault();
         _activeIdx = parseInt(h.dataset.idx, 10);
         h.setPointerCapture?.(ev.pointerId);
       });
-      h.addEventListener('pointermove', (ev) => onMove(ev));
-      h.addEventListener('pointerup', (ev) => onUp(ev));
-      h.addEventListener('pointercancel', (ev) => onUp(ev));
+      h.addEventListener('pointermove', onMove);
+      h.addEventListener('pointerup', onUp);
+      h.addEventListener('pointercancel', onUp);
     });
 
     host.appendChild(wrap);
@@ -443,7 +544,7 @@ const OCR = (() => {
     if (!_ui.enabled || !_ui.canvas || !_ui.ctx || !_srcBitmap || !_cropPts) return;
 
     const wrapW = _ui.wrap.getBoundingClientRect().width || 320;
-    const maxH = 420; // bigger -> less blur & easier to position
+    const maxH = 420;
     const scale = Math.min(wrapW / _srcW, maxH / _srcH);
 
     const cssW = Math.round(_srcW * scale);
@@ -459,15 +560,13 @@ const OCR = (() => {
     _ui.dispH = cssH;
 
     const ctx = _ui.ctx;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in CSS pixels
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
     ctx.imageSmoothingEnabled = true;
-
     ctx.drawImage(_srcBitmap, 0, 0, cssW, cssH);
 
     const ptsC = _cropPts.map(p => ({ x: p.x * scale, y: p.y * scale }));
 
-    // Polygon
     ctx.save();
     ctx.lineWidth = 2;
     ctx.strokeStyle = 'rgba(255, 191, 0, 0.95)';
@@ -480,7 +579,6 @@ const OCR = (() => {
     ctx.stroke();
     ctx.restore();
 
-    // Handles position
     for (let i = 0; i < 4; i++) {
       const h = _ui.handles[i];
       if (!h) continue;
@@ -496,7 +594,9 @@ const OCR = (() => {
     _cropPts[idx] = { x, y };
   }
 
-  // ── Perspective transform (same as v1) ──────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // Perspective transform
+  // ─────────────────────────────────────────────────────────────
 
   function _dist(a,b){ const dx=a.x-b.x, dy=a.y-b.y; return Math.hypot(dx,dy); }
 
@@ -507,7 +607,7 @@ const OCR = (() => {
     const right = _dist(pts[1], pts[2]);
     const w = Math.max(top, bottom);
     const h = Math.max(left, right);
-    return { W: Math.max(600, Math.round(w)), H: Math.max(600, Math.round(h)) };
+    return { W: Math.max(700, Math.round(w)), H: Math.max(700, Math.round(h)) };
   }
 
   function _solveHomography(src, dst) {
@@ -620,7 +720,9 @@ const OCR = (() => {
     return dstCanvas;
   }
 
-  // ── Scan actions ────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // Scan actions + debug storage
+  // ─────────────────────────────────────────────────────────────
 
   async function scanCropped() {
     if (!_srcBitmap || !_cropPts) return;
@@ -630,9 +732,18 @@ const OCR = (() => {
 
     try {
       const text = await recognize(warped, (pct, msg) => _setProgress(pct, msg));
+
+      _lastText = text || '';
+      window.__OCR_LAST_TEXT__ = _lastText;
+      console.log('OCR RAW TEXT (rectified, first 1500):\n', _lastText.slice(0,1500));
+
       _setProgress(100, '✓ Text erkannt');
 
-      const parsed = parse(text);
+      const parsed = parse(_lastText);
+      _lastParsed = parsed;
+      window.__OCR_LAST_PARSED__ = parsed;
+      console.log('OCR PARSED:', parsed);
+
       showResult(parsed);
 
       if (!parsed.date.value && !parsed.liters.value && !parsed.totalCost.value) {
@@ -647,10 +758,22 @@ const OCR = (() => {
   async function scanOriginal() {
     if (!_srcBitmap) return;
     _setProgress(10, 'Scanne ohne Ausrichten…');
+
     try {
       const text = await recognize(_srcBitmap, (pct, msg) => _setProgress(pct, msg));
+
+      _lastText = text || '';
+      window.__OCR_LAST_TEXT__ = _lastText;
+      console.log('OCR RAW TEXT (original, first 1500):\n', _lastText.slice(0,1500));
+
       _setProgress(100, '✓ Text erkannt');
-      showResult(parse(text));
+
+      const parsed = parse(_lastText);
+      _lastParsed = parsed;
+      window.__OCR_LAST_PARSED__ = parsed;
+      console.log('OCR PARSED:', parsed);
+
+      showResult(parsed);
     } catch (err) {
       _setProgress(0, '✗ Fehler: ' + (err?.message || err));
       console.error(err);
@@ -661,36 +784,51 @@ const OCR = (() => {
     _setProgress(10, 'Scanne…');
     try {
       const text = await recognize(file, (pct, msg) => _setProgress(pct, msg));
+
+      _lastText = text || '';
+      window.__OCR_LAST_TEXT__ = _lastText;
+      console.log('OCR RAW TEXT (direct, first 1500):\n', _lastText.slice(0,1500));
+
       _setProgress(100, '✓ Text erkannt');
-      showResult(parse(text));
+
+      const parsed = parse(_lastText);
+      _lastParsed = parsed;
+      window.__OCR_LAST_PARSED__ = parsed;
+      console.log('OCR PARSED:', parsed);
+
+      showResult(parsed);
     } catch (err) {
       _setProgress(0, '✗ Fehler: ' + (err?.message || err));
       console.error(err);
     }
   }
 
-  // ── Result UI ───────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // Results UI
+  // ─────────────────────────────────────────────────────────────
 
   function showResult(parsed) {
     const section = document.getElementById('ocr-result-section');
     if (section) section.style.display = 'block';
 
     const fields = [
-      { key: 'date',          id: 'ocr-r-date',  format: v => v },
-      { key: 'liters',        id: 'ocr-r-liters', format: v => v?.toFixed(2) },
-      { key: 'totalCost',     id: 'ocr-r-total',  format: v => v?.toFixed(2) },
-      { key: 'pricePerLiter', id: 'ocr-r-ppl',    format: v => v?.toFixed(4) },
+      { key: 'date',          id: 'ocr-r-date',   fmt: v => v },
+      { key: 'liters',        id: 'ocr-r-liters', fmt: v => (v != null ? v.toFixed(2) : '') },
+      { key: 'totalCost',     id: 'ocr-r-total',  fmt: v => (v != null ? v.toFixed(2) : '') },
+      { key: 'pricePerLiter', id: 'ocr-r-ppl',    fmt: v => (v != null ? v.toFixed(4) : '') },
     ];
 
     for (const f of fields) {
-      const inp = document.getElementById(f.id);
-      if (!inp) continue;
-      const data = parsed[f.key] || { value: null };
-      inp.value = (data.value !== null && data.value !== undefined)
-        ? (f.key === 'date' ? data.value : f.format(data.value))
-        : '';
+      const el = document.getElementById(f.id);
+      if (!el) continue;
+      const d = parsed?.[f.key];
+      el.value = (d && d.value != null) ? f.fmt(d.value) : '';
     }
   }
+
+  // ─────────────────────────────────────────────────────────────
+  // Small DOM helpers
+  // ─────────────────────────────────────────────────────────────
 
   function _setProgress(pct, msg) {
     const wrap = document.getElementById('ocr-progress-wrap');
@@ -706,8 +844,20 @@ const OCR = (() => {
   function _val(id){ const el=document.getElementById(id); return el ? el.value : ''; }
   function _setVal(id,v){ const el=document.getElementById(id); if(el) el.value=v; }
 
-  return { openOverlay, closeOverlay, handleFile, transfer, parse, recognize, scanCropped, scanOriginal };
+  // ─────────────────────────────────────────────────────────────
+  // Public debug helpers
+  // ─────────────────────────────────────────────────────────────
+  function getLastText(){ return _lastText; }
+  function getLastParsed(){ return _lastParsed; }
+
+  return {
+    openOverlay, closeOverlay, handleFile, transfer,
+    parse, recognize,
+    scanCropped, scanOriginal,
+    getLastText, getLastParsed
+  };
 
 })();
 
+// Needed for inline onclick="OCR.openOverlay()"
 window.OCR = OCR;
