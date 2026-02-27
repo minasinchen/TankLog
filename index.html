@@ -1,0 +1,520 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#080b0f">
+  <title>TankLog</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Mulish:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pouchdb/8.0.1/pouchdb.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ── HEADER ── -->
+  <div id="header">
+    <div id="header-left">
+      <span class="logo">TANK<em>LOG</em></span>
+    </div>
+    <div id="header-center">
+      <div class="vehicle-select-wrap" id="vehicle-select-wrap">
+        <select id="vehicle-select" onchange="App.selectVehicle(this.value)">
+          <option value="">— Fahrzeug wählen —</option>
+        </select>
+        <svg class="select-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
+      </div>
+    </div>
+    <div id="header-right">
+      <button class="icon-btn" onclick="App.openGarage()" title="Garage">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      </button>
+      <button class="icon-btn" onclick="App.openSettings()" title="Einstellungen">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- ── SYNC STATUS BAR ── -->
+  <div id="sync-bar" class="sync-bar sync-offline">
+    <span id="sync-dot" class="sync-dot"></span>
+    <span id="sync-label">Offline — nur lokale Daten</span>
+  </div>
+
+  <!-- ── CONTENT ── -->
+  <div id="content">
+
+    <!-- VIEW: HOME -->
+    <div class="view active" id="view-home">
+      <div class="view-scroll">
+        <div id="home-no-vehicle" class="empty-state" style="display:none">
+          <div class="empty-icon">🚗</div>
+          <div class="empty-title">Kein Fahrzeug</div>
+          <div class="empty-sub">Lege dein erstes Fahrzeug in der Garage an.</div>
+          <button class="btn btn-primary" onclick="App.openGarage()">Garage öffnen</button>
+        </div>
+        <div id="home-content">
+          <div class="home-stats-grid" id="home-stats"></div>
+          <div class="section-head">Letzter Tankvorgang</div>
+          <div id="home-last-fuel" class="card"></div>
+          <div class="section-head">Bald fällig</div>
+          <div id="home-upcoming"></div>
+          <div class="section-head">Letzte Einträge</div>
+          <div id="home-recent-list" class="card list-card"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- VIEW: LISTE -->
+    <div class="view" id="view-list">
+      <div class="view-scroll">
+        <div class="list-toolbar">
+          <div class="list-tabs">
+            <button class="list-tab active" data-tab="fuel" onclick="App.switchListTab('fuel',this)">Tanken</button>
+            <button class="list-tab" data-tab="maintenance" onclick="App.switchListTab('maintenance',this)">Wartung</button>
+            <button class="list-tab" data-tab="costs" onclick="App.switchListTab('costs',this)">Kosten</button>
+          </div>
+          <button class="btn-add-row" id="list-add-btn" onclick="App.addFromList()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Neu
+          </button>
+        </div>
+        <div id="list-content" class="card list-card"></div>
+      </div>
+    </div>
+
+    <!-- VIEW: TANKEN (neuer Eintrag) -->
+    <div class="view" id="view-tank">
+      <div class="view-scroll">
+        <div class="form-page-title">Neues <em>Tanken</em></div>
+
+        <div class="form-section">
+          <div class="form-row-2">
+            <div class="form-group">
+              <label>Datum</label>
+              <input type="date" id="tf-date">
+            </div>
+            <div class="form-group">
+              <label>km-Stand</label>
+              <input type="number" id="tf-odometer" placeholder="123456" inputmode="numeric" oninput="App.updateFuelPreview()">
+            </div>
+          </div>
+          <div class="form-row-2">
+            <div class="form-group">
+              <label>Liter</label>
+              <input type="number" id="tf-liters" placeholder="45,21" step="0.01" inputmode="decimal" oninput="App.updateFuelPreview()">
+            </div>
+            <div class="form-group">
+              <label>Gesamt €</label>
+              <input type="number" id="tf-total" placeholder="53,30" step="0.01" inputmode="decimal" oninput="App.updateFuelPreview()">
+            </div>
+          </div>
+          <div class="form-group">
+            <label>Notiz (optional)</label>
+            <input type="text" id="tf-note" placeholder="z.B. Shell A7">
+          </div>
+          <label class="checkbox-row">
+            <input type="checkbox" id="tf-partial">
+            <span class="checkbox-box"></span>
+            <span>Nicht vollgetankt (Verbrauch aus Statistik ausschließen)</span>
+          </label>
+        </div>
+
+        <!-- Calc preview -->
+        <div class="calc-preview-card" id="calc-preview" style="display:none">
+          <div class="calc-item">
+            <span class="calc-val" id="cp-ppl">—</span>
+            <span class="calc-lbl">€/L</span>
+          </div>
+          <div class="calc-sep"></div>
+          <div class="calc-item">
+            <span class="calc-val" id="cp-km">—</span>
+            <span class="calc-lbl">km gefahren</span>
+          </div>
+          <div class="calc-sep"></div>
+          <div class="calc-item">
+            <span class="calc-val" id="cp-cons">—</span>
+            <span class="calc-lbl">L/100km</span>
+          </div>
+        </div>
+
+        <div class="form-section">
+          <div id="tf-validation-msg" class="validation-msg" style="display:none"></div>
+          <button class="btn btn-primary btn-full" onclick="App.saveFuelEntry()">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>
+            Tankvorgang speichern
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- VIEW: ANALYSE -->
+    <div class="view" id="view-analyse">
+      <div class="view-scroll">
+        <div class="analyse-period-bar">
+          <button class="period-btn active" data-period="all" onclick="App.setAnalysePeriod('all',this)">Gesamt</button>
+          <button class="period-btn" data-period="12" onclick="App.setAnalysePeriod('12',this)">12 Mo</button>
+          <button class="period-btn" data-period="6" onclick="App.setAnalysePeriod('6',this)">6 Mo</button>
+          <button class="period-btn" data-period="3" onclick="App.setAnalysePeriod('3',this)">3 Mo</button>
+        </div>
+        <div class="analyse-stats-grid" id="analyse-stats"></div>
+        <div class="section-head">Verbrauch — L/100km</div>
+        <div class="chart-card card"><canvas id="chart-consumption" height="180"></canvas></div>
+        <div class="section-head">Kraftstoffpreis — €/L</div>
+        <div class="chart-card card"><canvas id="chart-price" height="160"></canvas></div>
+        <div class="section-head">Kosten gesamt — €/Monat</div>
+        <div class="chart-card card"><canvas id="chart-costs" height="160"></canvas></div>
+        <div class="section-head">Kosten nach Kategorie</div>
+        <div id="costs-breakdown" class="card list-card"></div>
+      </div>
+    </div>
+
+    <!-- VIEW: SYNC -->
+    <div class="view" id="view-sync">
+      <div class="view-scroll">
+        <div class="form-page-title">Sync / <em>Backup</em></div>
+
+        <!-- CouchDB Sync -->
+        <div class="sync-section card">
+          <div class="sync-section-head">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+            <span>CouchDB / NAS Sync</span>
+            <span class="badge badge-amber" id="sync-badge">Aus</span>
+          </div>
+          <div class="sync-status-row" id="sync-status-detail">
+            <span id="sync-detail-text">Nicht verbunden</span>
+          </div>
+          <div class="form-group" style="margin:12px 0 8px">
+            <label>CouchDB URL</label>
+            <input type="url" id="s-couchdb-url" placeholder="http://192.168.1.100:5984/tanklog">
+          </div>
+          <div class="form-row-2">
+            <div class="form-group">
+              <label>Benutzer</label>
+              <input type="text" id="s-couchdb-user" placeholder="admin">
+            </div>
+            <div class="form-group">
+              <label>Passwort</label>
+              <input type="password" id="s-couchdb-pass" placeholder="••••••">
+            </div>
+          </div>
+          <div class="btn-row">
+            <button class="btn btn-primary" id="sync-connect-btn" onclick="App.toggleSync()">Verbinden</button>
+            <button class="btn btn-secondary" onclick="App.syncNow()">Jetzt sync</button>
+          </div>
+          <div class="sync-info-box">
+            <strong>NAS Setup:</strong> CouchDB per Docker starten, CORS für deine IP aktivieren. Anleitung: <code>docker run -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=pass couchdb:3</code>
+          </div>
+        </div>
+
+        <!-- Export/Import -->
+        <div class="sync-section card">
+          <div class="sync-section-head">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            <span>JSON Backup</span>
+          </div>
+          <div class="btn-row" style="flex-direction:column;gap:8px">
+            <button class="btn btn-secondary btn-full" onclick="App.exportJSON()">📦 Vollständiges Backup exportieren</button>
+            <label class="btn btn-secondary btn-full" style="cursor:pointer;justify-content:center">
+              📥 Backup importieren (JSON)
+              <input type="file" accept=".json" style="display:none" onchange="App.importJSON(this)">
+            </label>
+          </div>
+        </div>
+
+        <!-- CSV Import -->
+        <div class="sync-section card">
+          <div class="sync-section-head">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+            <span>CSV Import (Google Sheets)</span>
+          </div>
+          <p style="font-size:12px;color:var(--t3);margin:6px 0 10px">Format: <code>datum,kmstand,liter,euro,notiz</code><br>Dezimalkomma, dd.mm.yyyy oder yyyy-mm-dd</p>
+          <label class="btn btn-secondary btn-full" style="cursor:pointer;justify-content:center">
+            📊 CSV importieren
+            <input type="file" accept=".csv,.tsv,.txt" style="display:none" onchange="App.importCSV(this)">
+          </label>
+          <div id="csv-result" style="margin-top:10px;display:none"></div>
+        </div>
+
+        <!-- Danger zone -->
+        <div class="sync-section card" style="border-color:rgba(239,68,68,0.3)">
+          <div class="sync-section-head" style="color:var(--red)">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+            Gefahrenzone
+          </div>
+          <button class="btn btn-danger btn-full" onclick="App.clearAllData()">Alle lokalen Daten löschen</button>
+        </div>
+
+      </div>
+    </div>
+
+  </div><!-- /content -->
+
+  <!-- ── BOTTOM NAV ── -->
+  <nav id="nav">
+    <button class="nav-btn active" id="nb-home" onclick="App.go('home')">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      Home
+    </button>
+    <button class="nav-btn" id="nb-list" onclick="App.go('list')">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+      Liste
+    </button>
+    <button class="nav-btn nav-center" id="nb-tank" onclick="App.go('tank')">
+      <div class="nav-center-ring">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+      </div>
+      Tanken
+    </button>
+    <button class="nav-btn" id="nb-analyse" onclick="App.go('analyse')">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      Analyse
+    </button>
+    <button class="nav-btn" id="nb-sync" onclick="App.go('sync')">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
+      Sync
+    </button>
+  </nav>
+
+</div><!-- /app -->
+
+<!-- ── TOAST ── -->
+<div id="toast"></div>
+
+<!-- ── OVERLAYS / MODALS ── -->
+
+<!-- Garage Overlay -->
+<div class="overlay" id="overlay-garage">
+  <div class="overlay-panel overlay-full">
+    <div class="overlay-head">
+      <span>Garage</span>
+      <button class="icon-btn" onclick="App.closeOverlay('overlay-garage')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="overlay-body">
+      <div id="garage-list"></div>
+      <button class="btn btn-primary btn-full" style="margin-top:12px" onclick="App.openVehicleForm()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        Fahrzeug hinzufügen
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Vehicle Form Overlay -->
+<div class="overlay" id="overlay-vehicle-form">
+  <div class="overlay-panel overlay-sheet">
+    <div class="overlay-head">
+      <span id="vehicle-form-title">Fahrzeug anlegen</span>
+      <button class="icon-btn" onclick="App.closeOverlay('overlay-vehicle-form')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="overlay-body">
+      <input type="hidden" id="vf-id">
+      <div class="form-section-label">Pflichtfelder</div>
+      <div class="form-row-2">
+        <div class="form-group">
+          <label>Name (Kurzname) *</label>
+          <input type="text" id="vf-name" placeholder="Golf">
+        </div>
+        <div class="form-group">
+          <label>Kraftstoff *</label>
+          <select id="vf-fueltype"></select>
+        </div>
+      </div>
+      <div class="form-row-2">
+        <div class="form-group">
+          <label>Marke</label>
+          <input type="text" id="vf-make" placeholder="Volkswagen">
+        </div>
+        <div class="form-group">
+          <label>Modell</label>
+          <input type="text" id="vf-model" placeholder="Golf">
+        </div>
+      </div>
+      <div class="form-section-label">Details</div>
+      <div class="form-row-2">
+        <div class="form-group">
+          <label>Baujahr</label>
+          <input type="number" id="vf-year" placeholder="2015" min="1900" max="2100">
+        </div>
+        <div class="form-group">
+          <label>Variante</label>
+          <input type="text" id="vf-variant" placeholder="Golf VI 5K">
+        </div>
+      </div>
+      <div class="form-row-2">
+        <div class="form-group">
+          <label>Kennzeichen</label>
+          <input type="text" id="vf-plate" placeholder="XX-YY 123">
+        </div>
+        <div class="form-group">
+          <label>Motorcode</label>
+          <input type="text" id="vf-engine" placeholder="CBZB">
+        </div>
+      </div>
+      <div class="form-row-2">
+        <div class="form-group">
+          <label>Reifengröße</label>
+          <input type="text" id="vf-tires" placeholder="205/55 R16">
+        </div>
+        <div class="form-group">
+          <label>Öl-Spezifikation</label>
+          <input type="text" id="vf-oil" placeholder="5W-30">
+        </div>
+      </div>
+      <div class="form-group">
+        <label>VIN / Fahrgestellnummer</label>
+        <input type="text" id="vf-vin" placeholder="WVWZZZ1JZ3W386752">
+      </div>
+      <div class="form-group">
+        <label>Notizen</label>
+        <textarea id="vf-notes" rows="3" placeholder="Weitere Infos…" style="width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--t1);font-family:var(--font-body);font-size:14px;resize:none;outline:none"></textarea>
+      </div>
+      <div class="btn-row" style="margin-top:8px">
+        <button class="btn btn-secondary" id="vf-delete-btn" onclick="App.deleteVehicle()" style="display:none">Löschen</button>
+        <button class="btn btn-primary" style="flex:1" onclick="App.saveVehicle()">Speichern</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Fuel Edit Overlay -->
+<div class="overlay" id="overlay-fuel-edit">
+  <div class="overlay-panel overlay-sheet">
+    <div class="overlay-head">
+      <span id="fuel-edit-title">Tankvorgang</span>
+      <button class="icon-btn" onclick="App.closeOverlay('overlay-fuel-edit')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="overlay-body">
+      <input type="hidden" id="fe-id">
+      <div class="form-row-2">
+        <div class="form-group"><label>Datum</label><input type="date" id="fe-date"></div>
+        <div class="form-group"><label>km-Stand</label><input type="number" id="fe-odometer" inputmode="numeric"></div>
+      </div>
+      <div class="form-row-2">
+        <div class="form-group"><label>Liter</label><input type="number" id="fe-liters" step="0.01" inputmode="decimal"></div>
+        <div class="form-group"><label>Gesamt €</label><input type="number" id="fe-total" step="0.01" inputmode="decimal"></div>
+      </div>
+      <div class="form-group"><label>Notiz</label><input type="text" id="fe-note"></div>
+      <label class="checkbox-row"><input type="checkbox" id="fe-partial"><span class="checkbox-box"></span><span>Nicht vollgetankt</span></label>
+      <div class="btn-row" style="margin-top:12px">
+        <button class="btn btn-danger" onclick="App.deleteFuelEntry()">Löschen</button>
+        <button class="btn btn-primary" style="flex:1" onclick="App.saveFuelEdit()">Speichern</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Maintenance Form Overlay -->
+<div class="overlay" id="overlay-maint-form">
+  <div class="overlay-panel overlay-sheet">
+    <div class="overlay-head">
+      <span id="maint-form-title">Wartung</span>
+      <button class="icon-btn" onclick="App.closeOverlay('overlay-maint-form')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="overlay-body">
+      <input type="hidden" id="mf-id">
+      <div class="form-group"><label>Titel *</label><input type="text" id="mf-title" placeholder="TÜV, Ölwechsel, …" list="maint-titles-list"><datalist id="maint-titles-list"><option value="TÜV"/><option value="Ölwechsel"/><option value="Inspektion"/><option value="Reifenwechsel"/><option value="Sonstiges"/></datalist></div>
+      <div class="form-row-2">
+        <div class="form-group"><label>Datum (durchgeführt)</label><input type="date" id="mf-date"></div>
+        <div class="form-group"><label>km-Stand</label><input type="number" id="mf-odometer" inputmode="numeric"></div>
+      </div>
+      <div class="form-group"><label>Kosten (€)</label><input type="number" id="mf-cost" step="0.01" inputmode="decimal"></div>
+      <div class="form-section-label">Fälligkeit</div>
+      <div class="form-row-2">
+        <div class="form-group"><label>Fällig am</label><input type="date" id="mf-due-date"></div>
+        <div class="form-group"><label>Fällig bei km</label><input type="number" id="mf-due-km" inputmode="numeric"></div>
+      </div>
+      <div class="form-row-2">
+        <div class="form-group"><label>Erinnerung (Tage vorher)</label><input type="number" id="mf-remind-days" placeholder="30" inputmode="numeric"></div>
+        <div class="form-group"><label>Erinnerung (km vorher)</label><input type="number" id="mf-remind-km" inputmode="numeric"></div>
+      </div>
+      <div class="form-group"><label>Notiz</label><textarea id="mf-note" rows="2" style="width:100%;background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 12px;color:var(--t1);font-family:var(--font-body);font-size:14px;resize:none;outline:none"></textarea></div>
+      <div class="btn-row" style="margin-top:8px">
+        <button class="btn btn-secondary" id="mf-ics-btn" onclick="App.downloadMaintICS()" style="display:none">📅 ICS</button>
+        <button class="btn btn-danger" id="mf-delete-btn" onclick="App.deleteMaint()" style="display:none">Löschen</button>
+        <button class="btn btn-primary" style="flex:1" onclick="App.saveMaint()">Speichern</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Cost Form Overlay -->
+<div class="overlay" id="overlay-cost-form">
+  <div class="overlay-panel overlay-sheet">
+    <div class="overlay-head">
+      <span id="cost-form-title">Kosten</span>
+      <button class="icon-btn" onclick="App.closeOverlay('overlay-cost-form')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="overlay-body">
+      <input type="hidden" id="cf-id">
+      <div class="form-row-2">
+        <div class="form-group"><label>Datum *</label><input type="date" id="cf-date"></div>
+        <div class="form-group"><label>Betrag € *</label><input type="number" id="cf-amount" step="0.01" inputmode="decimal"></div>
+      </div>
+      <div class="form-group"><label>Kategorie</label><select id="cf-category"></select></div>
+      <div class="form-group"><label>km-Stand</label><input type="number" id="cf-odometer" inputmode="numeric"></div>
+      <div class="form-group"><label>Notiz</label><input type="text" id="cf-note" placeholder="Werkstatt Müller, Reparatur…"></div>
+      <div class="btn-row" style="margin-top:12px">
+        <button class="btn btn-danger" id="cf-delete-btn" onclick="App.deleteCost()" style="display:none">Löschen</button>
+        <button class="btn btn-primary" style="flex:1" onclick="App.saveCost()">Speichern</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Settings Overlay -->
+<div class="overlay" id="overlay-settings">
+  <div class="overlay-panel overlay-sheet">
+    <div class="overlay-head">
+      <span>Einstellungen</span>
+      <button class="icon-btn" onclick="App.closeOverlay('overlay-settings')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="overlay-body">
+      <div class="form-section-label">Warnungen</div>
+      <div class="form-group">
+        <label>Warnung bei Verbrauch über (L/100km)</label>
+        <input type="number" id="set-warn-consumption" placeholder="25" step="0.5" inputmode="decimal">
+      </div>
+      <div class="form-group">
+        <label>Wartungs-Erinnerung (Tage)</label>
+        <input type="number" id="set-remind-days" placeholder="14" inputmode="numeric">
+      </div>
+      <button class="btn btn-primary btn-full" onclick="App.saveSettings()" style="margin-top:12px">Speichern</button>
+    </div>
+  </div>
+</div>
+
+<!-- CSV Import Result Overlay -->
+<div class="overlay" id="overlay-csv-result">
+  <div class="overlay-panel overlay-sheet">
+    <div class="overlay-head">
+      <span>CSV Import Ergebnis</span>
+      <button class="icon-btn" onclick="App.closeOverlay('overlay-csv-result')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="overlay-body" id="csv-result-body"></div>
+  </div>
+</div>
+
+<script src="db.js"></script>
+<script src="calc.js"></script>
+<script src="sync.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
