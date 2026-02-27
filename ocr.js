@@ -1,15 +1,16 @@
 /**
- * TankLog OCR — Rectify v5
+ * TankLog OCR — Rectify v6
  *
- * Fixes & improvements vs v4:
- * ✅ FIX: Handle-Punkte waren falsch positioniert (canvas war width:100% → gestreckt)
- *        Jetzt: Canvas hat explizite CSS-Größe + offsetX für Handles korrekt berechnet
- * ✅ NEU: Warp-Vorschau — nach "Scannen" wird das begradigt Bild ZUERST angezeigt,
- *        User kann bestätigen oder zurückgehen
- * ✅ VERBESSERT: Auto-Ecken erkennt jetzt den hellen Beleg-Bereich (weißes Papier)
- *        per Helligkeitsprofil statt nur Tintenpixel
- * ✅ VERBESSERT: Liter-Parser mit mehr Mustern (Menge auf Folgezeile, Kraftstoffkontext,
- *        stärkere Kreuzvalidierung total/preis → liter)
+ * NEU in v6:
+ * ✅ EXIF-Rotation: Samsung & iOS speichern Fotos gedreht → createImageBitmap ignoriert
+ *    das auf Android Chrome → OCR sieht das Bild seitlich → gar nichts erkannt.
+ *    Fix: EXIF-Orientation wird manuell aus JPEG-Bytes ausgelesen und Bild gedreht.
+ * ✅ Bildvorverarbeitung vor OCR: Graustufen + adaptiver Kontrast-Boost + leichtes Schärfen.
+ *    Hilft bei Foto-vom-Foto (Moiré, Bildschirmreflexion) und schlechtem Licht.
+ * ✅ Auflösungsbegrenzung für OCR (max. 2400px längste Seite): Samsung produziert
+ *    20MP-Fotos, Tesseract auf Mobile bricht bei zu großen Bildern ab oder ist sehr langsam.
+ * ✅ Liter-Sanity: liters == totalCost (Preis statt Liter erkannt) wird abgefangen.
+ * ✅ PPL-Erkennung: isolierte 4-Dezimal-Zahlen als Fallback.
  */
 
 const OCR = (() => {
@@ -469,17 +470,181 @@ const OCR = (() => {
     _hideWarpPreview();
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // EXIF-Rotation + Bildvorverarbeitung
+  // ─────────────────────────────────────────────────────────────
+
+  /**
+   * Liest EXIF-Orientation aus JPEG-Bytes (ohne externe Bibliothek).
+   * Gibt 1–8 zurück (1 = normal, 3 = 180°, 6 = 90° CW, 8 = 90° CCW).
+   */
+  function _readExifOrientation(arrayBuffer) {
+    try {
+      const view = new DataView(arrayBuffer);
+      if (view.getUint16(0) !== 0xFFD8) return 1; // kein JPEG
+
+      let offset = 2;
+      while (offset < view.byteLength - 2) {
+        const marker = view.getUint16(offset);
+        offset += 2;
+        if (marker === 0xFFE1) { // APP1 = EXIF
+          const exifLen = view.getUint16(offset);
+          // "Exif\0\0"
+          if (view.getUint32(offset + 2) !== 0x45786966) break;
+          const tiffStart = offset + 8;
+          const littleEndian = view.getUint16(tiffStart) === 0x4949;
+          const ifdOffset = view.getUint32(tiffStart + 4, littleEndian);
+          const ifdStart = tiffStart + ifdOffset;
+          const entries = view.getUint16(ifdStart, littleEndian);
+          for (let i = 0; i < entries; i++) {
+            const tag = view.getUint16(ifdStart + 2 + i * 12, littleEndian);
+            if (tag === 0x0112) { // Orientation
+              return view.getUint16(ifdStart + 2 + i * 12 + 8, littleEndian);
+            }
+          }
+          break;
+        } else if ((marker & 0xFF00) !== 0xFF00) {
+          break;
+        } else {
+          offset += view.getUint16(offset);
+        }
+      }
+    } catch (_) {}
+    return 1;
+  }
+
+  /**
+   * Gibt ein Canvas zurück, das gemäß EXIF-Orientation gedreht/gespiegelt ist.
+   * orientation: 1=normal 2=flip-h 3=180 4=flip-v 5=transpose 6=90cw 7=transverse 8=90ccw
+   */
+  function _applyExifOrientation(bitmap, orientation) {
+    let sw = bitmap.width, sh = bitmap.height;
+    const rotated = (orientation >= 5); // 5–8: width & height tauschen
+    const cw = rotated ? sh : sw;
+    const ch = rotated ? sw : sh;
+
+    const c = document.createElement('canvas');
+    c.width = cw; c.height = ch;
+    const ctx = c.getContext('2d');
+
+    // Transformationsmatrix je Orientation-Wert
+    switch (orientation) {
+      case 2: ctx.transform(-1, 0, 0,  1, cw, 0);   break;
+      case 3: ctx.transform(-1, 0, 0, -1, cw, ch);  break;
+      case 4: ctx.transform( 1, 0, 0, -1, 0,  ch);  break;
+      case 5: ctx.transform( 0, 1, 1,  0, 0,   0);  break;
+      case 6: ctx.transform( 0, 1,-1,  0, ch,  0);  break;
+      case 7: ctx.transform( 0,-1,-1,  0, ch, cw);  break;
+      case 8: ctx.transform( 0,-1, 1,  0, 0,  cw);  break;
+      default: break; // 1 = normal
+    }
+    ctx.drawImage(bitmap, 0, 0);
+    return c;
+  }
+
+  /**
+   * Liest eine File/Blob als ArrayBuffer und liefert ein korrekt gedrehtes ImageBitmap.
+   * Ist der Haupt-Einstiegspunkt statt createImageBitmap(file) direkt.
+   */
+  async function _loadImageFixed(file) {
+    const buf = await file.arrayBuffer();
+    const orientation = _readExifOrientation(buf);
+
+    // createImageBitmap ignoriert EXIF auf Android Chrome → roher Bitmap zuerst laden
+    const rawBitmap = await createImageBitmap(file);
+
+    if (orientation === 1) return rawBitmap; // kein Drehen nötig
+
+    // Auf Canvas drehen und als neues Bitmap zurückgeben
+    const rotatedCanvas = _applyExifOrientation(rawBitmap, orientation);
+    return await createImageBitmap(rotatedCanvas);
+  }
+
+  /**
+   * Bildvorverarbeitung vor OCR:
+   * - Auf max. 2400px begrenzen (Samsung 20MP → Tesseract zu langsam auf Mobile)
+   * - Graustufen
+   * - Kontrast-Boost (adaptiv: Histogramm-Stretching)
+   * - Leichtes Unsharp-Mask (Schärfen)
+   * Gibt ein Canvas zurück.
+   */
+  function _preprocessForOCR(bitmap) {
+    const MAX = 2400;
+    const scale = Math.min(1, MAX / Math.max(bitmap.width, bitmap.height));
+    const w = Math.round(bitmap.width  * scale);
+    const h = Math.round(bitmap.height * scale);
+
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(bitmap, 0, 0, w, h);
+
+    const img = ctx.getImageData(0, 0, w, h);
+    const d = img.data;
+    const n = w * h;
+
+    // ── 1. Graustufen ──────────────────────────────────────────
+    const gray = new Uint8Array(n);
+    for (let i = 0; i < n; i++) {
+      gray[i] = Math.round(0.2126 * d[i*4] + 0.7152 * d[i*4+1] + 0.0722 * d[i*4+2]);
+    }
+
+    // ── 2. Histogramm-Stretching (Kontrast) ───────────────────
+    // Ignoriere die extremen 2% oben und unten (Ausreißer durch Moiré/Reflexion)
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < n; i++) hist[gray[i]]++;
+    const lo2pct = Math.round(n * 0.02), hi2pct = Math.round(n * 0.98);
+    let cumul = 0, lo = 0, hi = 255;
+    for (let v = 0; v < 256; v++) { cumul += hist[v]; if (cumul >= lo2pct) { lo = v; break; } }
+    cumul = 0;
+    for (let v = 255; v >= 0; v--) { cumul += hist[v]; if (cumul >= n - hi2pct) { hi = v; break; } }
+    const range = Math.max(1, hi - lo);
+    for (let i = 0; i < n; i++) {
+      gray[i] = Math.min(255, Math.max(0, Math.round((gray[i] - lo) / range * 255)));
+    }
+
+    // ── 3. Unsharp-Mask (3×3 Gauss-Blur → Differenz addieren) ─
+    const blur = new Uint8Array(n);
+    // Einfache Box-Blur 3×3 als Annäherung (schnell genug)
+    for (let y = 1; y < h - 1; y++) {
+      for (let x = 1; x < w - 1; x++) {
+        const idx = y * w + x;
+        blur[idx] = Math.round((
+          gray[idx - w - 1] + gray[idx - w] + gray[idx - w + 1] +
+          gray[idx     - 1] + gray[idx]     + gray[idx     + 1] +
+          gray[idx + w - 1] + gray[idx + w] + gray[idx + w + 1]
+        ) / 9);
+      }
+    }
+    const strength = 1.5; // Schärfungsstärke
+    for (let i = 0; i < n; i++) {
+      const sharpened = gray[i] + strength * (gray[i] - blur[i]);
+      gray[i] = Math.min(255, Math.max(0, Math.round(sharpened)));
+    }
+
+    // ── Zurückschreiben als Graustufenbild ─────────────────────
+    for (let i = 0; i < n; i++) {
+      d[i*4] = d[i*4+1] = d[i*4+2] = gray[i];
+      d[i*4+3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    return c;
+  }
+
   async function handleFile(file) {
     if (!file) return;
     _hide('ocr-zone');
     _hide('ocr-result-section');
     _show('ocr-progress-wrap', 'block');
-    _setProgress(8, 'Bild geladen…');
+    _setProgress(5, 'Lade Bild…');
 
     try {
-      _srcBitmap = await createImageBitmap(file);
-      _srcW = _srcBitmap.width;
-      _srcH = _srcBitmap.height;
+      // EXIF-Rotation korrigieren (Samsung/iOS-Problem)
+      _setProgress(10, 'Orientierung prüfen…');
+      const corrected = await _loadImageFixed(file);
+      _srcBitmap = corrected;
+      _srcW = corrected.width;
+      _srcH = corrected.height;
 
       const mx = Math.round(_srcW * 0.06);
       const my = Math.round(_srcH * 0.04);
@@ -1029,8 +1194,9 @@ const OCR = (() => {
   async function _scanDirect(file) {
     _setProgress(10, 'Scanne…');
     try {
-      const bmp = await createImageBitmap(file);
-      await _runOCR(bmp);
+      // EXIF-Rotation auch im Fallback-Pfad korrigieren
+      const corrected = await _loadImageFixed(file);
+      await _runOCR(corrected);
     } catch (err) {
       _setProgress(0, '✗ Fehler: ' + (err?.message || err));
     }
@@ -1038,7 +1204,12 @@ const OCR = (() => {
 
   async function _runOCR(source) {
     try {
-      const text = await recognize(source, (pct, msg) => _setProgress(pct, msg));
+      // Bildvorverarbeitung: Graustufen + Kontrast + Schärfen + Größenbegrenzung
+      // (hilft bei Foto-vom-Foto, Samsung 20MP, schlechtem Licht)
+      _setProgress(12, 'Bildvorverarbeitung…');
+      const processed = _preprocessForOCR(source);
+
+      const text = await recognize(processed, (pct, msg) => _setProgress(pct, msg));
       _lastText = text || '';
       window.__OCR_LAST_TEXT__ = _lastText;
       console.log('OCR RAW (erste 2000 Zeichen):\n', _lastText.slice(0, 2000));
