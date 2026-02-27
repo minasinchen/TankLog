@@ -58,20 +58,6 @@ const OCR = (() => {
 
   // ── German Receipt Parser ───────────────────────────────────
 
-// Normalize OCR text for more robust parsing (Android often inserts spaces in numbers)
-function _normalizeText(t) {
-  if (!t) return '';
-  return String(t)
-    .replace(/\u00A0/g, ' ')
-    // keep line breaks, but normalize other whitespace
-    .replace(/\r/g, '')
-    // fix "12, 34" -> "12,34" and "1. 234,56" -> "1.234,56"
-    .replace(/(\d)\s*([,\.])\s*(\d)/g, '$1$2$3')
-    // remove spaces inside digit groups: "1 234,56" -> "1234,56"
-    .replace(/(\d)\s+(\d{3}([,\.]|\b))/g, '$1$2')
-    .trim();
-}
-
   /**
    * Parse raw OCR text from a German fuel receipt.
    * Returns { date, liters, totalCost, pricePerLiter } each with:
@@ -80,10 +66,10 @@ function _normalizeText(t) {
    *   conf:  confidence 0..1 (0.9=high, 0.5=medium, 0.2=low/implausible)
    */
   function parse(text) {
-    const norm = _normalizeText(text);
-    // Keep line structure for heuristics
-    const lines = norm.split('\\n').map(l => l.trim()).filter(Boolean);
-    const flat = norm;
+    // Normalize common OCR quirks (spaced decimals, EUR variants, stray separators)
+    const normalized = _normalizeOCRText(text);
+    const lines = normalized.split('\n').map(l => l.trim()).filter(Boolean);
+    const flat = normalized;
 
     const result = {
       date:          { value: null, raw: null, conf: 0 },
@@ -135,7 +121,7 @@ function _normalizeText(t) {
 
     // High confidence: number followed by " L" or " Liter"
     if (!result.liters.value) {
-      const literRE = /([0-9]{1,3}[,\.][0-9]{1,3})\s*[lL](?:iter)?\b/g;
+      const literRE = /([0-9]{1,3}[,\.][0-9]{2,3})\s*[lL](?:iter)?\b/g;
       const lMatches = [...flat.matchAll(literRE)]
         .map(m => ({ raw: m[1], value: _parseDE(m[1]) }))
         .filter(m => m.value && m.value > 1 && m.value < 250);
@@ -148,8 +134,9 @@ function _normalizeText(t) {
 
     // ── TOTAL COST ────────────────────────────────────────────
 
-    // High confidence: labeled "Gesamt", "Summe", "Betrag", "Total", "zu zahlen", "Gesamtbetrag"
-    const totalKeyRE = /(?:gesamt(?:betrag)?|bruttobetrag|summe|total|betrag|zu\s+zahlen|betrag\s+eur?)[:\s€$]*([0-9]{1,4}[,\.][0-9]{2})/gi;
+    // High confidence: labeled totals.
+    // Some receipts put the value on the next line → allow small gap with [\s\S]{0,30}
+    const totalKeyRE = /(?:gesamt(?:betrag)?|bruttobetrag|endbetrag|summe|total|betrag|zu\s+zahlen)[\s\S]{0,30}?([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur)?/gi;
     const tkMatches = [...flat.matchAll(totalKeyRE)];
     for (const m of tkMatches) {
       const v = _parseDE(m[1]);
@@ -159,11 +146,11 @@ function _normalizeText(t) {
       }
     }
 
-    // Medium: largest plausible Euro amount in text
+    // Medium: largest plausible Euro amount in text (supports € and EUR)
     if (!result.totalCost.value) {
-      const euroRE = /(?:[€$E][\s]*([0-9]{1,4}[,\.][0-9]{2}))|(?:([0-9]{1,4}[,\.][0-9]{2})\s*(?:[€E]|EUR|EURO))/gi;
+      const euroRE = /(?:€\s*([0-9]{1,4}[,\.][0-9]{2}))|(?:([0-9]{1,4}[,\.][0-9]{2})\s*€)|(?:\b([0-9]{1,4}[,\.][0-9]{2})\s*(?:eur)\b)/gi;
       const euroMatches = [...flat.matchAll(euroRE)]
-        .map(m => ({ raw: m[1] || m[2], value: _parseDE(m[1] || m[2]) }))
+        .map(m => ({ raw: m[1] || m[2] || m[3], value: _parseDE(m[1] || m[2] || m[3]) }))
         .filter(m => m.value && m.value > 2 && m.value < 500);
 
       if (euroMatches.length) {
@@ -176,8 +163,8 @@ function _normalizeText(t) {
     // ── PRICE PER LITER ───────────────────────────────────────
 
     // "1,479 €/l" or "1.479/L" or labeled "Preis", "Kraftstoffpreis", "Listenpreis"
-    const pplRE = /([0-9][,\.][0-9]{3,4})\s*(?:[€$E]\s*)?[\/\\]?\s*(?:[lL]|Liter)/g;
-    const pplLabelRE = /(?:preis[\/\\]l|kraftstoffpreis|listenpreis|€\/l|eur\/l)[:\s=]*([0-9][,\.][0-9]{3})/gi;
+    const pplRE = /([0-9][,\.][0-9]{3,4})\s*(?:€|eur)?\s*[\/\\]?\s*(?:[lL]|Liter)/gi;
+    const pplLabelRE = /(?:preis[\/\\]l|kraftstoffpreis|listenpreis|€\/l|eur\/l|eur\s*\/\s*l)[:\s=]*([0-9][,\.][0-9]{3,4})/gi;
 
     const pplLabelM = flat.match(pplLabelRE);
     if (pplLabelM) {
@@ -235,20 +222,14 @@ function _normalizeText(t) {
   // ── Helpers ─────────────────────────────────────────────────
 
   /** Parse German decimal comma number: "45,21" → 45.21 */
-function _parseDE(s) {
-  if (!s && s !== 0) return null;
-  const str = String(s).trim()
-    .replace(/[ ]+/g, '')
-    // common OCR confusions (rare, but helps)
-    .replace(/O/g, '0')
-    .replace(/I/g, '1');
-
-  // Remove thousand separator dots (e.g. 1.234,56 → 1234.56)
-  const cleaned = str.replace(/\.(?=\d{3}[,])/g, '').replace(',', '.');
-  const v = parseFloat(cleaned);
-  return isNaN(v) ? null : v;
-}
-
+  function _parseDE(s) {
+    if (!s && s !== 0) return null;
+    const str = String(s).trim();
+    // Remove thousand separator dots (e.g. 1.234,56 → 1234.56)
+    const cleaned = str.replace(/\.(?=\d{3}[,])/g, '').replace(',', '.');
+    const v = parseFloat(cleaned);
+    return isNaN(v) ? null : v;
+  }
 
   /** Parse various German/ISO date formats to ISO YYYY-MM-DD */
   function _parseDate(s) {
@@ -270,12 +251,39 @@ function _parseDE(s) {
     return null;
   }
 
+  /**
+   * Normalize common OCR quirks seen on German fuel receipts.
+   * Goal: make regex matching resilient without accidentally breaking dates.
+   */
+  function _normalizeOCRText(t) {
+    if (!t) return '';
+    let s = String(t);
+
+    // Unify newlines
+    s = s.replace(/\r\n?/g, '\n');
+
+    // Make currency/units more consistent
+    s = s.replace(/\bEURO\b/gi, 'EUR');
+    s = s.replace(/€\s*uro/gi, 'EUR');
+
+    // Fix spaced decimals in value+unit contexts (very common on mobile OCR):
+    // "49 04 L" → "49,04 L" | "84 30 EUR" → "84,30 EUR" | "1 719 EUR/L" → "1,719 EUR/L"
+    s = s.replace(/\b(\d{1,3})\s+(\d{2})\s*(?=(?:eur|€|l\b|liter\b|\/\s*l|\/\s*liter))/gi, '$1,$2');
+    s = s.replace(/\b(\d)\s+(\d{3,4})\s*(?=(?:eur\s*\/\s*l|€\s*\/\s*l|\/\s*l|\/\s*liter))/gi, '$1,$2');
+
+    // Remove spaces around comma/dot inside numbers: "84, 30" → "84,30" | "1. 719" → "1.719"
+    s = s.replace(/(\d)\s*([,\.])\s*(\d)/g, '$1$2$3');
+
+    // Normalize multiple spaces
+    s = s.replace(/[ \t]{2,}/g, ' ');
+    return s;
+  }
+
   // ── UI Controller ───────────────────────────────────────────
 
   function openOverlay() {
     // Reset state
-    document.getElementById('ocr-file-camera') && (document.getElementById('ocr-file-camera').value = '');
-    document.getElementById('ocr-file-gallery') && (document.getElementById('ocr-file-gallery').value = '');
+    document.getElementById('ocr-file-input').value = '';
     document.getElementById('ocr-img-preview-wrap').style.display = 'none';
     document.getElementById('ocr-result-section').style.display = 'none';
     document.getElementById('ocr-progress-wrap').style.display = 'none';
@@ -317,20 +325,7 @@ function _parseDE(s) {
       progressLabel.textContent = '✓ Text erkannt';
 
       const parsed = parse(text);
-showResult(parsed);
-
-const hasAny = !!(parsed.date.value || parsed.liters.value || parsed.totalCost.value || parsed.pricePerLiter.value);
-if (!hasAny) {
-  progressLabel.textContent = '✓ Text erkannt, aber keine Werte gefunden — Foto näher/heller, Beleg flach';
-  return;
-}
-
-// Auto-transfer if we have the two key fields with decent confidence
-const okLiters = parsed.liters.value && parsed.liters.conf >= 0.70;
-const okTotal  = parsed.totalCost.value && parsed.totalCost.conf >= 0.70;
-if (okLiters && okTotal) {
-  transfer();
-}
+      showResult(parsed);
 
     } catch (err) {
       progressLabel.textContent = '✗ Fehler: ' + err.message;
