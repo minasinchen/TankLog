@@ -382,3 +382,5 @@ const OCR = (() => {
   };
 
 })();
+
+window.OCR = OCR;
