@@ -274,16 +274,29 @@ const OCR = (() => {
 
   // ── UI Controller ───────────────────────────────────────────
 
-  function openOverlay() {
-    // Reset state
-    document.getElementById('ocr-file-input').value = '';
-    document.getElementById('ocr-img-preview-wrap').style.display = 'none';
-    document.getElementById('ocr-result-section').style.display = 'none';
-    document.getElementById('ocr-progress-wrap').style.display = 'none';
-    document.getElementById('ocr-zone').style.display = 'flex';
-    document.getElementById('overlay-ocr').classList.add('open');
-  }
+ function openOverlay() {
+  // Reset state (support both: single input OR camera+gallery inputs)
+  const idsToReset = ['ocr-file-input', 'ocr-file-camera', 'ocr-file-gallery'];
+  idsToReset.forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
 
+  const preview = document.getElementById('ocr-img-preview-wrap');
+  if (preview) preview.style.display = 'none';
+
+  const res = document.getElementById('ocr-result-section');
+  if (res) res.style.display = 'none';
+
+  const prog = document.getElementById('ocr-progress-wrap');
+  if (prog) prog.style.display = 'none';
+
+  const zone = document.getElementById('ocr-zone');
+  if (zone) zone.style.display = 'flex';
+
+  const ov = document.getElementById('overlay-ocr');
+  if (ov) ov.classList.add('open');
+}
   function closeOverlay() {
     document.getElementById('overlay-ocr').classList.remove('open');
   }
