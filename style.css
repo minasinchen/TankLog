@@ -603,3 +603,201 @@ select { cursor: pointer; }
 
 /* ── MISC ── */
 code { font-family: var(--font-mono); font-size: 0.9em; }
+
+/* ═══════════════════════════════════════════════════════════
+   OCR STYLES
+═══════════════════════════════════════════════════════════ */
+
+/* Trigger button in tank view */
+.ocr-trigger-row { padding: 10px 12px 0; }
+
+.ocr-trigger-btn {
+  width: 100%; display: flex; align-items: center; gap: 12px;
+  background: var(--bg1); border: 1px solid var(--border2);
+  border-radius: var(--radius); padding: 14px 14px;
+  cursor: pointer; text-align: left;
+  -webkit-tap-highlight-color: transparent;
+  transition: border-color 0.15s, background 0.15s;
+}
+.ocr-trigger-btn:active { background: var(--bg2); border-color: var(--amber); }
+
+.ocr-trigger-icon {
+  width: 44px; height: 44px; border-radius: 10px;
+  background: var(--amber-d); border: 1px solid rgba(245,158,11,0.3);
+  display: flex; align-items: center; justify-content: center;
+  color: var(--amber); flex-shrink: 0;
+}
+.ocr-trigger-text { flex: 1; }
+.ocr-trigger-title {
+  display: block; font-family: var(--font-head); font-weight: 700;
+  font-size: 15px; letter-spacing: 0.5px; color: var(--t1);
+}
+.ocr-trigger-sub {
+  display: block; font-family: var(--font-mono); font-size: 10px;
+  color: var(--t3); letter-spacing: 0.5px; margin-top: 3px;
+}
+
+.ocr-divider {
+  display: flex; align-items: center; gap: 10px;
+  padding: 12px 12px 6px; color: var(--t3);
+  font-family: var(--font-mono); font-size: 10px; letter-spacing: 1px;
+}
+.ocr-divider::before, .ocr-divider::after {
+  content: ''; flex: 1; height: 1px; background: var(--border);
+}
+
+/* OCR overlay zone */
+.ocr-zone {
+  border: 2px dashed var(--border2); border-radius: var(--radius);
+  padding: 36px 20px; text-align: center; cursor: pointer;
+  display: flex; flex-direction: column; align-items: center;
+  position: relative; transition: all 0.2s; margin-bottom: 4px;
+}
+.ocr-zone:hover { border-color: var(--amber); background: var(--amber-g); }
+
+/* OCR result fields */
+.ocr-field { border-color: var(--border2); }
+.ocr-uncertain { border-color: rgba(251,146,60,0.6) !important; background: rgba(251,146,60,0.05) !important; }
+.ocr-hint {
+  display: none; font-family: var(--font-mono); font-size: 10px;
+  color: var(--orange); margin-top: 4px; letter-spacing: 0.5px;
+}
+
+/* ═══════════════════════════════════════════════════════════
+   VEHICLE DATABASE PICKER STYLES
+═══════════════════════════════════════════════════════════ */
+
+.vdb-picker-card {
+  background: var(--bg2); border: 1px solid var(--border2);
+  border-radius: var(--radius); overflow: hidden; margin-bottom: 4px;
+}
+
+.vdb-picker-head {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; background: var(--bg3);
+  font-family: var(--font-head); font-size: 12px;
+  font-weight: 700; letter-spacing: 1px; text-transform: uppercase;
+  color: var(--amber); border-bottom: 1px solid var(--border);
+}
+.vdb-picker-head svg { flex-shrink: 0; }
+
+.vdb-collapse-btn {
+  margin-left: auto; background: none; border: none; cursor: pointer;
+  color: var(--t3); padding: 2px; transition: transform 0.2s;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.vdb-cascade { padding: 12px 12px 4px; }
+.vdb-cascade .form-group { margin-bottom: 8px; }
+
+.vdb-preview {
+  margin: 0 12px 12px;
+  background: var(--bg1); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 10px 12px;
+}
+
+.vdb-preview-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
+}
+.vdb-preview-item {
+  display: flex; flex-direction: column; gap: 2px;
+}
+.vdb-pk {
+  font-family: var(--font-mono); font-size: 9px; color: var(--t3);
+  letter-spacing: 1.5px; text-transform: uppercase;
+}
+.vdb-pv {
+  font-family: var(--font-mono); font-size: 13px;
+  font-weight: 700; color: var(--amber);
+}
+
+/* Tire size chips */
+.chip-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip {
+  padding: 5px 10px; border-radius: 6px;
+  background: var(--bg3); border: 1px solid var(--border);
+  color: var(--t2); cursor: pointer;
+  font-family: var(--font-mono); font-size: 11px;
+  transition: all 0.15s; -webkit-tap-highlight-color: transparent;
+}
+.chip:active { background: var(--amber-d); border-color: rgba(245,158,11,0.4); }
+.chip-active { background: var(--amber-d) !important; border-color: rgba(245,158,11,0.6) !important; color: var(--amber) !important; }
+
+/* ═══════════════════════════════════════════════════════════
+   LICENSE PLATE STYLES
+═══════════════════════════════════════════════════════════ */
+
+/* Large plate in vehicle form */
+.plate-preview {
+  display: inline-flex; align-items: center;
+  background: #fff; border: 2px solid #222;
+  border-radius: 6px; overflow: hidden;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.5);
+  height: 40px; min-width: 160px;
+  position: relative;
+}
+
+.plate-eu-strip {
+  width: 28px; height: 100%;
+  background: #003399; display: flex;
+  flex-direction: column; align-items: center;
+  justify-content: center; gap: 1px; flex-shrink: 0;
+}
+.plate-eu-stars { font-size: 8px; color: #FFD700; letter-spacing: 0; }
+.plate-eu-d { font-size: 8px; color: #fff; font-weight: 900; letter-spacing: 0; font-family: var(--font-mono); }
+
+.plate-text {
+  flex: 1; text-align: center;
+  font-family: 'Courier New', monospace;
+  font-weight: 900; font-size: 18px;
+  color: #111; letter-spacing: 2px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.plate-sticker-wrap {
+  position: absolute; right: 6px; top: 3px;
+  display: flex; gap: 2px;
+}
+.plate-sticker-tl {
+  width: 12px; height: 12px; border-radius: 2px;
+  background: linear-gradient(135deg, #e74c3c 50%, #c0392b 50%);
+  opacity: 0.8;
+}
+.plate-sticker-tr {
+  width: 12px; height: 12px; border-radius: 2px;
+  background: linear-gradient(135deg, #2980b9 50%, #1a6fa0 50%);
+  opacity: 0.8;
+}
+
+/* Mini plate in garage card */
+.mini-plate {
+  display: inline-flex; align-items: center;
+  background: #fff; border: 1.5px solid #333;
+  border-radius: 4px; overflow: hidden;
+  box-shadow: 0 1px 8px rgba(0,0,0,0.5);
+  height: 26px; min-width: 100px; max-width: 140px;
+}
+.mini-plate-empty { opacity: 0.5; }
+.mini-plate-eu {
+  width: 18px; height: 100%; background: #003399;
+  display: flex; flex-direction: column;
+  align-items: center; justify-content: center;
+  flex-shrink: 0;
+}
+.mini-plate-text {
+  flex: 1; text-align: center;
+  font-family: 'Courier New', monospace;
+  font-weight: 900; font-size: 11px;
+  color: #111; letter-spacing: 1px;
+  padding: 0 5px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Garage card layout update */
+.garage-card-left { flex: 1; min-width: 0; }
+.garage-card-right {
+  display: flex; flex-direction: column;
+  align-items: flex-end; gap: 4px; flex-shrink: 0; margin-left: 8px;
+}
+

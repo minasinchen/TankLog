@@ -677,6 +677,181 @@ const App = (() => {
     renderAnalyse();
   }
 
+  // ── VEHICLE DATABASE PICKER ──────────────────────────────────
+
+  function _initVdbPicker() {
+    const brandSel = document.getElementById('vdb-brand');
+    if (!brandSel) return;
+    brandSel.innerHTML = '<option value="">— Marke wählen —</option>' +
+      VehicleDB.getBrands().map(b => `<option value="${b}">${b}</option>`).join('');
+    // Reset cascade
+    ['vdb-model-group','vdb-gen-group','vdb-variant-group','vdb-tire-group'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    });
+    const preview = document.getElementById('vdb-preview');
+    if (preview) preview.style.display = 'none';
+    const applyBtn = document.getElementById('vdb-apply-btn');
+    if (applyBtn) applyBtn.style.display = 'none';
+  }
+
+  function vdbSelectBrand(brand) {
+    const modelSel = document.getElementById('vdb-model');
+    const modelGroup = document.getElementById('vdb-model-group');
+    ['vdb-gen-group','vdb-variant-group','vdb-tire-group'].forEach(id => {
+      document.getElementById(id).style.display = 'none';
+    });
+    document.getElementById('vdb-preview').style.display = 'none';
+    document.getElementById('vdb-apply-btn').style.display = 'none';
+
+    if (!brand) { modelGroup.style.display = 'none'; return; }
+    const models = VehicleDB.getModels(brand);
+    modelSel.innerHTML = '<option value="">— Modell wählen —</option>' +
+      models.map(m => `<option value="${m}">${m}</option>`).join('');
+    modelGroup.style.display = 'block';
+  }
+
+  function vdbSelectModel(model) {
+    const brand = document.getElementById('vdb-brand').value;
+    const genSel = document.getElementById('vdb-generation');
+    const genGroup = document.getElementById('vdb-gen-group');
+    ['vdb-variant-group','vdb-tire-group'].forEach(id => {
+      document.getElementById(id).style.display = 'none';
+    });
+    document.getElementById('vdb-preview').style.display = 'none';
+    document.getElementById('vdb-apply-btn').style.display = 'none';
+
+    if (!model) { genGroup.style.display = 'none'; return; }
+    const gens = VehicleDB.getGenerations(brand, model);
+    genSel.innerHTML = '<option value="">— Generation wählen —</option>' +
+      gens.map(g => `<option value="${g}">${g}</option>`).join('');
+    genGroup.style.display = 'block';
+  }
+
+  function vdbSelectGeneration(gen) {
+    const brand = document.getElementById('vdb-brand').value;
+    const model = document.getElementById('vdb-model').value;
+    const varSel = document.getElementById('vdb-variant');
+    const varGroup = document.getElementById('vdb-variant-group');
+    document.getElementById('vdb-tire-group').style.display = 'none';
+    document.getElementById('vdb-preview').style.display = 'none';
+    document.getElementById('vdb-apply-btn').style.display = 'none';
+
+    if (!gen) { varGroup.style.display = 'none'; return; }
+    const variants = VehicleDB.getVariants(brand, model, gen);
+    varSel.innerHTML = '<option value="">— Variante wählen —</option>' +
+      variants.map(v => `<option value="${v.name}">${v.name} ${v.power ? '(' + v.power + ' PS)' : ''}</option>`).join('');
+    varGroup.style.display = 'block';
+  }
+
+  function vdbSelectVariant(variantName) {
+    const brand = document.getElementById('vdb-brand').value;
+    const model = document.getElementById('vdb-model').value;
+    const gen   = document.getElementById('vdb-generation').value;
+    const tireGroup = document.getElementById('vdb-tire-group');
+    const preview = document.getElementById('vdb-preview');
+    const applyBtn = document.getElementById('vdb-apply-btn');
+
+    if (!variantName) {
+      tireGroup.style.display = 'none';
+      preview.style.display = 'none';
+      applyBtn.style.display = 'none';
+      return;
+    }
+
+    const v = VehicleDB.findVariant(brand, model, gen, variantName);
+    if (!v) return;
+
+    // Tire chips
+    if (v.tires && v.tires.length > 1) {
+      const chipsEl = document.getElementById('vdb-tire-chips');
+      chipsEl.innerHTML = v.tires.map((t, i) =>
+        `<button class="chip ${i === 0 ? 'chip-active' : ''}" onclick="App.vdbSelectTire(this,'${t}')">${t}</button>`
+      ).join('');
+      tireGroup.style.display = 'block';
+    } else {
+      tireGroup.style.display = 'none';
+    }
+
+    // Preview card
+    preview.style.display = 'block';
+    preview.innerHTML = `
+      <div class="vdb-preview-grid">
+        <div class="vdb-preview-item"><span class="vdb-pk">Motorcode</span><span class="vdb-pv">${v.code || '—'}</span></div>
+        <div class="vdb-preview-item"><span class="vdb-pk">Kraftstoff</span><span class="vdb-pv">${v.fuel || '—'}</span></div>
+        <div class="vdb-preview-item"><span class="vdb-pk">Öl</span><span class="vdb-pv">${v.oil || '—'}</span></div>
+        <div class="vdb-preview-item"><span class="vdb-pk">Leistung</span><span class="vdb-pv">${v.power ? v.power + ' PS' : '—'}</span></div>
+        <div class="vdb-preview-item"><span class="vdb-pk">Reifen</span><span class="vdb-pv">${(v.tires || []).join(' / ') || '—'}</span></div>
+        <div class="vdb-preview-item"><span class="vdb-pk">Generation</span><span class="vdb-pv">${gen}</span></div>
+      </div>`;
+
+    applyBtn.style.display = 'flex';
+  }
+
+  function vdbSelectTire(btn, size) {
+    document.querySelectorAll('#vdb-tire-chips .chip').forEach(c => c.classList.remove('chip-active'));
+    btn.classList.add('chip-active');
+  }
+
+  function vdbApply() {
+    const brand    = document.getElementById('vdb-brand').value;
+    const model    = document.getElementById('vdb-model').value;
+    const gen      = document.getElementById('vdb-generation').value;
+    const varName  = document.getElementById('vdb-variant').value;
+    const v        = VehicleDB.findVariant(brand, model, gen, varName);
+    if (!v) return;
+
+    // Selected tire
+    const activeChip = document.querySelector('#vdb-tire-chips .chip-active');
+    const tire = activeChip ? activeChip.textContent : (v.tires?.[0] || '');
+
+    // Fill form fields
+    document.getElementById('vf-make').value     = brand;
+    document.getElementById('vf-model').value    = model;
+    document.getElementById('vf-engine').value   = v.code || '';
+    document.getElementById('vf-tires').value    = tire;
+    document.getElementById('vf-oil').value      = v.oil || '';
+    document.getElementById('vf-variant').value  = varName;
+    document.getElementById('vf-fueltype').value = v.fuel || 'Benzin';
+
+    // Set name if empty
+    if (!document.getElementById('vf-name').value) {
+      document.getElementById('vf-name').value = model;
+    }
+
+    // Extract year from generation string (e.g. "Golf VI (5K) 2008–2013" → 2008)
+    const yearMatch = gen.match(/(\d{4})/);
+    if (yearMatch && !document.getElementById('vf-year').value) {
+      document.getElementById('vf-year').value = yearMatch[1];
+    }
+
+    toast('Fahrzeugdaten übernommen ✓', 'success');
+
+    // Collapse picker
+    const body = document.getElementById('vdb-picker-body');
+    if (body) body.style.display = 'none';
+    const collapseBtn = document.getElementById('vdb-collapse-btn');
+    if (collapseBtn) collapseBtn.style.transform = 'rotate(180deg)';
+  }
+
+  let _vdbPickerOpen = true;
+  function toggleVdbPicker() {
+    _vdbPickerOpen = !_vdbPickerOpen;
+    const body = document.getElementById('vdb-picker-body');
+    const btn = document.getElementById('vdb-collapse-btn');
+    if (body) body.style.display = _vdbPickerOpen ? 'block' : 'none';
+    if (btn) btn.style.transform = _vdbPickerOpen ? '' : 'rotate(180deg)';
+  }
+
+  // ── PLATE PREVIEW ────────────────────────────────────────────
+
+  function updatePlatePreview(value) {
+    const el = document.getElementById('plate-text');
+    if (!el) return;
+    const text = (value || '').trim().toUpperCase() || 'XX·AB 123';
+    el.textContent = text;
+  }
+
   // ── GARAGE ──────────────────────────────────────────────────
 
   function openGarage() {
@@ -693,13 +868,36 @@ const App = (() => {
     el.innerHTML = _vehicles.map(v => `
       <div class="garage-vehicle-card ${v._id === _currentVehicleId ? 'selected' : ''}"
            onclick="App.selectAndEdit('${v._id}')">
-        <div>
+        <div class="garage-card-left">
           <div class="garage-vehicle-name">${esc(v.name)}</div>
-          <div class="garage-vehicle-sub">${[v.make, v.model, v.year].filter(Boolean).join(' · ')}</div>
-          <div class="garage-vehicle-sub" style="margin-top:2px">${v.plate || ''} ${v.fuelType ? '· ' + v.fuelType : ''}</div>
+          <div class="garage-vehicle-sub">${[v.make, v.model, v.variant].filter(Boolean).join(' · ')}</div>
+          <div class="garage-vehicle-sub" style="margin-top:2px;color:var(--t3)">${v.fuelType || ''} ${v.engineCode ? '· ' + v.engineCode : ''}</div>
         </div>
-        ${v._id === _currentVehicleId ? '<span class="garage-vehicle-tag">Aktiv</span>' : ''}
+        <div class="garage-card-right">
+          ${_renderMiniPlate(v.plate)}
+          ${v._id === _currentVehicleId ? '<span class="garage-vehicle-tag" style="margin-top:6px">Aktiv</span>' : ''}
+        </div>
       </div>`).join('');
+  }
+
+  function _renderMiniPlate(plate) {
+    if (!plate || plate.trim() === '') {
+      return `<div class="mini-plate mini-plate-empty">
+        <div class="mini-plate-eu">
+          <div style="font-size:7px;color:#fff;text-align:center;line-height:1">★</div>
+          <div style="font-size:6px;color:#fff;font-weight:bold;text-align:center">D</div>
+        </div>
+        <span class="mini-plate-text" style="color:#aaa;font-style:italic;font-size:10px">kein Kennz.</span>
+      </div>`;
+    }
+    const text = plate.trim().toUpperCase();
+    return `<div class="mini-plate">
+      <div class="mini-plate-eu">
+        <div style="font-size:7px;color:#fff;text-align:center;line-height:1">★</div>
+        <div style="font-size:6px;color:#fff;font-weight:bold;text-align:center">D</div>
+      </div>
+      <span class="mini-plate-text">${esc(text)}</span>
+    </div>`;
   }
 
   function selectAndEdit(vehicleId) {
@@ -714,12 +912,21 @@ const App = (() => {
     document.getElementById('vf-id').value = vehicleId || '';
     document.getElementById('vf-delete-btn').style.display = isEdit ? '' : 'none';
 
+    // Reset VDB picker
+    _vdbPickerOpen = true;
+    const pickerBody = document.getElementById('vdb-picker-body');
+    if (pickerBody) pickerBody.style.display = 'block';
+    const collapseBtn = document.getElementById('vdb-collapse-btn');
+    if (collapseBtn) collapseBtn.style.transform = '';
+    _initVdbPicker();
+
     // Clear form
     ['vf-name','vf-make','vf-model','vf-year','vf-variant','vf-plate',
      'vf-engine','vf-tires','vf-oil','vf-vin','vf-notes'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.value = '';
     });
+    updatePlatePreview('');
 
     if (isEdit) {
       const v = _vehicles.find(x => x._id === vehicleId);
@@ -736,6 +943,11 @@ const App = (() => {
         document.getElementById('vf-vin').value    = v.vin || '';
         document.getElementById('vf-notes').value  = v.notes || '';
         document.getElementById('vf-fueltype').value = v.fuelType || 'Benzin';
+        updatePlatePreview(v.plate || '');
+        // Hide picker when editing (already have data)
+        if (pickerBody) pickerBody.style.display = 'none';
+        if (collapseBtn) collapseBtn.style.transform = 'rotate(180deg)';
+        _vdbPickerOpen = false;
       }
     }
 
@@ -1171,6 +1383,10 @@ const App = (() => {
     exportJSON, importJSON, importCSV, clearAllData,
     openSettings, saveSettings,
     openOverlay, closeOverlay,
+    // Vehicle DB picker
+    vdbSelectBrand, vdbSelectModel, vdbSelectGeneration, vdbSelectVariant,
+    vdbSelectTire, vdbApply, toggleVdbPicker,
+    updatePlatePreview,
     toast
   };
 

@@ -10,6 +10,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Mulish:wght@400;500;600&display=swap" rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pouchdb/8.0.1/pouchdb.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -90,6 +91,25 @@
     <div class="view" id="view-tank">
       <div class="view-scroll">
         <div class="form-page-title">Neues <em>Tanken</em></div>
+
+        <!-- OCR SCAN BUTTON -->
+        <div class="ocr-trigger-row">
+          <button class="ocr-trigger-btn" onclick="OCR.openOverlay()">
+            <div class="ocr-trigger-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+                <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+                <circle cx="12" cy="13" r="4"/>
+              </svg>
+            </div>
+            <div class="ocr-trigger-text">
+              <span class="ocr-trigger-title">Tankzettel fotografieren</span>
+              <span class="ocr-trigger-sub">OCR liest Datum, Liter &amp; Betrag automatisch</span>
+            </div>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" style="color:var(--amber);flex-shrink:0"><polyline points="9 18 15 12 9 6"/></svg>
+          </button>
+        </div>
+
+        <div class="ocr-divider"><span>oder manuell eingeben</span></div>
 
         <div class="form-section">
           <div class="form-row-2">
@@ -316,7 +336,59 @@
     </div>
     <div class="overlay-body">
       <input type="hidden" id="vf-id">
-      <div class="form-section-label">Pflichtfelder</div>
+
+      <!-- VEHICLE DATABASE PICKER -->
+      <div class="vdb-picker-card" id="vdb-picker-card">
+        <div class="vdb-picker-head">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+          <span>Fahrzeug aus Datenbank wählen</span>
+          <button class="vdb-collapse-btn" id="vdb-collapse-btn" onclick="App.toggleVdbPicker()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="18 15 12 9 6 15"/></svg>
+          </button>
+        </div>
+        <div id="vdb-picker-body">
+          <div class="vdb-cascade">
+            <div class="form-group">
+              <label>Marke</label>
+              <select id="vdb-brand" onchange="App.vdbSelectBrand(this.value)">
+                <option value="">— Marke wählen —</option>
+              </select>
+            </div>
+            <div class="form-group" id="vdb-model-group" style="display:none">
+              <label>Modell</label>
+              <select id="vdb-model" onchange="App.vdbSelectModel(this.value)">
+                <option value="">— Modell wählen —</option>
+              </select>
+            </div>
+            <div class="form-group" id="vdb-gen-group" style="display:none">
+              <label>Generation / Baujahr</label>
+              <select id="vdb-generation" onchange="App.vdbSelectGeneration(this.value)">
+                <option value="">— Generation wählen —</option>
+              </select>
+            </div>
+            <div class="form-group" id="vdb-variant-group" style="display:none">
+              <label>Motorvariante</label>
+              <select id="vdb-variant" onchange="App.vdbSelectVariant(this.value)">
+                <option value="">— Variante wählen —</option>
+              </select>
+            </div>
+            <div id="vdb-tire-group" style="display:none">
+              <div class="form-group">
+                <label>Reifengröße wählen</label>
+                <div id="vdb-tire-chips" class="chip-row"></div>
+              </div>
+            </div>
+          </div>
+          <div id="vdb-preview" class="vdb-preview" style="display:none"></div>
+          <button class="btn btn-primary btn-full" id="vdb-apply-btn" onclick="App.vdbApply()" style="display:none;margin-top:8px">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>
+            Daten übernehmen
+          </button>
+        </div>
+      </div>
+
+      <div class="form-section-label" style="margin-top:14px">Fahrzeugdaten</div>
+
       <div class="form-row-2">
         <div class="form-group">
           <label>Name (Kurzname) *</label>
@@ -351,13 +423,29 @@
       <div class="form-row-2">
         <div class="form-group">
           <label>Kennzeichen</label>
-          <input type="text" id="vf-plate" placeholder="XX-YY 123">
+          <input type="text" id="vf-plate" placeholder="MÜN-AB 123" oninput="App.updatePlatePreview(this.value)">
         </div>
         <div class="form-group">
           <label>Motorcode</label>
           <input type="text" id="vf-engine" placeholder="CBZB">
         </div>
       </div>
+
+      <!-- LIVE KENNZEICHEN PREVIEW -->
+      <div id="plate-preview-wrap" style="display:flex;justify-content:center;padding:10px 0 4px">
+        <div class="plate-preview" id="plate-preview">
+          <div class="plate-eu-strip">
+            <div class="plate-eu-stars">★</div>
+            <div class="plate-eu-d">D</div>
+          </div>
+          <div class="plate-text" id="plate-text">XX·AB 123</div>
+          <div class="plate-sticker-wrap">
+            <div class="plate-sticker-tl"></div>
+            <div class="plate-sticker-tr"></div>
+          </div>
+        </div>
+      </div>
+
       <div class="form-row-2">
         <div class="form-group">
           <label>Reifengröße</label>
@@ -512,8 +600,92 @@
   </div>
 </div>
 
+<!-- OCR Overlay -->
+<div class="overlay" id="overlay-ocr">
+  <div class="overlay-panel overlay-sheet">
+    <div class="overlay-head">
+      <span>Tankzettel <em style="font-style:normal;color:var(--amber)">scannen</em></span>
+      <button class="icon-btn" onclick="OCR.closeOverlay()">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="overlay-body">
+
+      <!-- Upload zone -->
+      <div class="ocr-zone" id="ocr-zone">
+        <input type="file" id="ocr-file-input" accept="image/*" capture="environment"
+               style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%"
+               onchange="OCR.handleFile(this.files[0])">
+        <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="color:var(--amber);margin-bottom:10px">
+          <path d="M23 19a2 2 0 01-2 2H3a2 2 0 01-2-2V8a2 2 0 012-2h4l2-3h6l2 3h4a2 2 0 012 2z"/>
+          <circle cx="12" cy="13" r="4"/>
+        </svg>
+        <p style="font-family:var(--font-head);font-size:16px;font-weight:700;letter-spacing:0.5px;color:var(--t1);margin-bottom:4px">Foto aufnehmen oder hochladen</p>
+        <p style="font-family:var(--font-mono);font-size:11px;color:var(--t3)">Tankzettel · kein Cloud-Upload · 100% lokal</p>
+      </div>
+
+      <!-- Image preview -->
+      <div id="ocr-img-preview-wrap" style="display:none;margin-bottom:10px">
+        <img id="ocr-img-preview" style="width:100%;border-radius:10px;max-height:220px;object-fit:contain;border:1px solid var(--border)">
+        <button class="btn btn-secondary" style="width:100%;margin-top:8px;font-size:12px" onclick="OCR.openOverlay()">
+          Anderes Foto wählen
+        </button>
+      </div>
+
+      <!-- Progress -->
+      <div id="ocr-progress-wrap" style="display:none;margin:10px 0">
+        <div style="background:var(--border);height:3px;border-radius:2px;overflow:hidden;margin-bottom:8px">
+          <div id="ocr-progress-fill" style="height:100%;background:var(--amber);width:0%;transition:width 0.3s;border-radius:2px"></div>
+        </div>
+        <div id="ocr-progress-label" style="font-family:var(--font-mono);font-size:11px;color:var(--t3);text-align:center;letter-spacing:0.5px"></div>
+      </div>
+
+      <!-- OCR Results -->
+      <div id="ocr-result-section" style="display:none">
+        <div style="font-family:var(--font-head);font-size:12px;letter-spacing:1.5px;text-transform:uppercase;color:var(--t3);margin:12px 0 8px">Erkannte Werte — bitte prüfen</div>
+
+        <div class="form-row-2">
+          <div class="form-group">
+            <label>Datum</label>
+            <input type="date" id="ocr-r-date" class="ocr-field">
+            <div class="ocr-hint" id="ocr-r-date-hint">⚠ Unsicher — bitte prüfen</div>
+          </div>
+          <div class="form-group">
+            <label>Liter</label>
+            <input type="number" id="ocr-r-liters" step="0.01" class="ocr-field" inputmode="decimal">
+            <div class="ocr-hint" id="ocr-r-liters-hint">⚠ Unsicher — bitte prüfen</div>
+          </div>
+        </div>
+        <div class="form-row-2">
+          <div class="form-group">
+            <label>Betrag €</label>
+            <input type="number" id="ocr-r-total" step="0.01" class="ocr-field" inputmode="decimal">
+            <div class="ocr-hint" id="ocr-r-total-hint">⚠ Unsicher — bitte prüfen</div>
+          </div>
+          <div class="form-group">
+            <label>€/Liter (optional)</label>
+            <input type="number" id="ocr-r-ppl" step="0.001" class="ocr-field" inputmode="decimal">
+            <div class="ocr-hint" id="ocr-r-ppl-hint">⚠ Unsicher — bitte prüfen</div>
+          </div>
+        </div>
+
+        <div class="btn-row" style="margin-top:4px">
+          <button class="btn btn-secondary" onclick="OCR.openOverlay()">Nochmal</button>
+          <button class="btn btn-primary" style="flex:1" onclick="OCR.transfer()">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M20 6L9 17l-5-5"/></svg>
+            Ins Formular übernehmen
+          </button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+
 <script src="db.js"></script>
 <script src="calc.js"></script>
+<script src="vehicles.js"></script>
+<script src="ocr.js"></script>
 <script src="sync.js"></script>
 <script src="app.js"></script>
 </body>
