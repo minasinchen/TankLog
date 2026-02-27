@@ -254,7 +254,10 @@
           <p style="font-size:12px;color:var(--t3);margin:6px 0 10px">Format: <code>datum,kmstand,liter,euro,notiz</code><br>Dezimalkomma, dd.mm.yyyy oder yyyy-mm-dd</p>
           <label class="btn btn-secondary btn-full" style="cursor:pointer;justify-content:center">
             📊 CSV importieren
-            <input type="file" accept=".csv,.tsv,.txt" style="display:none" onchange="App.importCSV(this)">
+            <!-- Android file pickers are picky: add MIME types so .csv is selectable reliably. -->
+            <input type="file"
+                   accept=".csv,text/csv,application/vnd.ms-excel,.tsv,text/tab-separated-values,.txt,text/plain"
+                   style="display:none" onchange="App.importCSV(this)">
           </label>
           <div id="csv-result" style="margin-top:10px;display:none"></div>
         </div>
@@ -613,7 +616,9 @@
 
       <!-- Upload zone -->
       <div class="ocr-zone" id="ocr-zone">
-        <input type="file" id="ocr-file-input" accept="image/*" capture="environment"
+        <!-- NOTE (Android/Samsung): do NOT use capture="environment" here, otherwise the picker may force CAMERA only.
+             Without capture, users can choose Camera OR Gallery/Files. -->
+        <input type="file" id="ocr-file-input" accept="image/*"
                style="position:absolute;inset:0;opacity:0;cursor:pointer;width:100%;height:100%"
                onchange="OCR.handleFile(this.files[0])">
         <svg width="44" height="44" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="color:var(--amber);margin-bottom:10px">

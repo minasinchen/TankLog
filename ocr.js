@@ -26,24 +26,35 @@ const OCR = (() => {
     }
 
     _loading = true;
-    try {
-      _worker = await Tesseract.createWorker('deu', 1, {
-        logger: m => {
-          if (m.status === 'recognizing text' && onProgress) {
-            onProgress(Math.round(m.progress * 100), 'Erkenne Text…');
-          } else if (m.status && onProgress) {
-            onProgress(null, m.status);
-          }
-        },
-        // Use CDN for language data
-        langPath: 'https://tessdata.projectnaptha.com/4.0.0',
-      });
-      _workerReady = true;
-    } catch (err) {
-      _loading = false;
-      throw err;
+    // Some mobile browsers (esp. Samsung/Android) are picky about large cross-origin downloads.
+    // Try a couple of known-good tessdata CDNs before giving up.
+    const langPaths = [
+      'https://tessdata.projectnaptha.com/4.0.0',
+      'https://cdn.jsdelivr.net/gh/naptha/tessdata@gh-pages/4.0.0',
+    ];
+
+    let lastErr = null;
+    for (const lp of langPaths) {
+      try {
+        _worker = await Tesseract.createWorker('deu', 1, {
+          logger: m => {
+            if (m.status === 'recognizing text' && onProgress) {
+              onProgress(Math.round(m.progress * 100), 'Erkenne Text…');
+            } else if (m.status && onProgress) {
+              onProgress(null, m.status);
+            }
+          },
+          langPath: lp,
+        });
+        _workerReady = true;
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
+      }
     }
     _loading = false;
+    if (lastErr) throw lastErr;
     return _worker;
   }
 
