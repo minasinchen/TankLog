@@ -641,17 +641,37 @@ const OCR = (() => {
       document.getElementById('overlay-ocr');
     if (!host) return;
 
+    // ── Mobile CSS: overlay vollbild, body scrollbar breit genug ──
+    if (!document.getElementById('ocr-mobile-css')) {
+      const s = document.createElement('style');
+      s.id = 'ocr-mobile-css';
+      s.textContent = `
+        #overlay-ocr .overlay-sheet {
+          max-height: 100dvh !important;
+          border-radius: 0 !important;
+        }
+        #overlay-ocr .overlay-body {
+          padding: 10px 10px 16px !important;
+          -webkit-overflow-scrolling: touch;
+        }
+        #ocr-crop-canvas { touch-action: none; }
+        @media (min-height: 700px) {
+          #overlay-ocr .overlay-sheet { max-height: 92dvh !important; border-radius: 16px 16px 0 0 !important; }
+        }
+      `;
+      document.head.appendChild(s);
+    }
+
     // ── Crop wrap ──────────────────────────────────────────────
     const wrap = document.createElement('div');
     wrap.id = 'ocr-crop-wrap';
-    wrap.style.cssText = 'display:none;margin-top:10px;position:relative;';
+    wrap.style.cssText = 'display:none;margin-top:8px;position:relative;';
 
     const canvas = document.createElement('canvas');
     canvas.id = 'ocr-crop-canvas';
-    // WICHTIG: kein width:100% mehr — wir setzen die CSS-Größe explizit in _renderCrop
     canvas.style.cssText = [
       'display:block',
-      'border-radius:10px',
+      'border-radius:8px',
       'border:1px solid var(--border)',
       'background:#000',
       'touch-action:none',
@@ -660,36 +680,37 @@ const OCR = (() => {
     ].join(';');
 
     const info = document.createElement('div');
-    info.style.cssText = 'margin-top:6px;font-family:var(--font-mono);font-size:11px;color:var(--t3)';
-    info.textContent = 'Tippe nahe an einen Punkt & zieh ihn auf die Beleg-Ecke.';
+    info.style.cssText = 'margin-top:4px;font-family:var(--font-mono);font-size:10px;color:var(--t3);line-height:1.3';
+    info.textContent = 'Ecken ziehen • ↻ Drehen wenn seitlich • Scannen';
 
-    const row = document.createElement('div');
-    row.style.cssText = 'display:flex;gap:8px;margin-top:8px';
+    // ── Buttons: 2×2 Grid ─────────────────────────────────────
+    const grid = document.createElement('div');
+    grid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:6px';
 
     const btnRotate = document.createElement('button');
     btnRotate.type = 'button'; btnRotate.className = 'btn btn-secondary';
-    btnRotate.style.flex = '1';
-    btnRotate.title = 'Bild 90° drehen';
     btnRotate.innerHTML = '↻ Drehen';
     btnRotate.onclick = () => rotateSrc90();
 
     const btnAuto = document.createElement('button');
-    btnAuto.type = 'button'; btnAuto.className = 'btn btn-secondary'; btnAuto.style.flex = '1';
+    btnAuto.type = 'button'; btnAuto.className = 'btn btn-secondary';
     btnAuto.textContent = 'Auto-Ecken';
     btnAuto.onclick = () => { _autoGuessCorners(); _renderCrop(); };
 
     const btnScan = document.createElement('button');
-    btnScan.type = 'button'; btnScan.className = 'btn btn-primary'; btnScan.style.flex = '1';
-    btnScan.textContent = 'Scannen';
+    btnScan.type = 'button'; btnScan.className = 'btn btn-primary';
+    btnScan.innerHTML = '⚡ Scannen';
+    btnScan.style.gridColumn = 'span 2';
     btnScan.onclick = () => scanCropped();
 
     const btnOff = document.createElement('button');
-    btnOff.type = 'button'; btnOff.className = 'btn btn-secondary'; btnOff.style.flex = '1';
-    btnOff.textContent = 'Ohne Ausrichten';
+    btnOff.type = 'button'; btnOff.className = 'btn btn-secondary';
+    btnOff.style.gridColumn = 'span 2';
+    btnOff.textContent = 'Ohne Begradigen scannen';
     btnOff.onclick = () => scanOriginal();
 
-    row.append(btnRotate, btnAuto, btnScan, btnOff);
-    wrap.append(canvas, info, row);
+    grid.append(btnRotate, btnAuto, btnScan, btnOff);
+    wrap.append(canvas, info, grid);
 
     // ── Handles ──────────────────────────────────────────────────
     const handles = [];
@@ -819,7 +840,8 @@ const OCR = (() => {
     _cropPts = _orderTLTRBRBL(_cropPts);
 
     const wrapW = _ui.wrap.getBoundingClientRect().width || 360;
-    const maxH  = 440;
+    // Viewport-relativ: max 35% der Bildschirmhöhe — passt auf kleine Handys
+    const maxH  = Math.min(340, Math.round(window.innerHeight * 0.35));
     const scale = Math.min(wrapW / _srcW, maxH / _srcH);
 
     const cssW = Math.round(_srcW * scale);
@@ -1158,30 +1180,96 @@ const OCR = (() => {
     }
   }
 
+  // ─────────────────────────────────────────────────────────────
+  // Claude Vision — primäres OCR-Backend
+  // ─────────────────────────────────────────────────────────────
+
+  async function _recognizeWithClaude(canvas, onProgress) {
+    if (onProgress) onProgress(15, 'Sende an KI…');
+
+    const MAX = 1400;
+    const sc  = Math.min(1, MAX / Math.max(canvas.width, canvas.height));
+    const c   = document.createElement('canvas');
+    c.width   = Math.round(canvas.width  * sc);
+    c.height  = Math.round(canvas.height * sc);
+    c.getContext('2d').drawImage(canvas, 0, 0, c.width, c.height);
+    const b64 = c.toDataURL('image/jpeg', 0.88).split(',')[1];
+
+    const resp = await fetch('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'claude-sonnet-4-20250514',
+        max_tokens: 300,
+        messages: [{
+          role: 'user',
+          content: [
+            { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } },
+            { type: 'text', text:
+`Dies ist ein Tankzettel / Kassenbon einer deutschen Tankstelle.
+Extrahiere genau diese 4 Werte und antworte NUR mit einem JSON-Objekt, ohne Erklärung, ohne Markdown:
+
+{"date":"YYYY-MM-DD","liters":Zahl,"totalCost":Zahl,"pricePerLiter":Zahl}
+
+Regeln:
+- date: Transaktionsdatum ISO-Format, oder null
+- liters: getankte Liter (typisch 20–80), oder null
+- totalCost: Gesamtbetrag EUR (typisch 30–150), oder null
+- pricePerLiter: Preis pro Liter EUR/L (typisch 1,20–2,50), oder null
+- Zahlen mit Dezimalpunkt (nicht Komma)
+- null wenn wirklich nicht lesbar` }
+          ]
+        }]
+      })
+    });
+
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    if (onProgress) onProgress(80, 'Werte auslesen…');
+
+    const data    = await resp.json();
+    const raw     = (data.content?.[0]?.text || '').trim();
+    console.log('Claude Vision:', raw);
+    const jsonStr = raw.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/,'').trim();
+    const p       = JSON.parse(jsonStr);
+
+    return {
+      date:          { value: p.date          || null,  raw: p.date,               conf: p.date          ? 0.97 : 0 },
+      liters:        { value: p.liters         ?? null,  raw: String(p.liters  ?? ''), conf: p.liters        != null ? 0.95 : 0 },
+      totalCost:     { value: p.totalCost      ?? null,  raw: String(p.totalCost ?? ''), conf: p.totalCost    != null ? 0.95 : 0 },
+      pricePerLiter: { value: p.pricePerLiter  ?? null,  raw: String(p.pricePerLiter ?? ''), conf: p.pricePerLiter != null ? 0.90 : 0 },
+    };
+  }
+
   async function _runOCR(source) {
     try {
-      // Bildvorverarbeitung: Graustufen + Kontrast + Schärfen + Größenbegrenzung
-      // (hilft bei Foto-vom-Foto, Samsung 20MP, schlechtem Licht)
       _setProgress(12, 'Bildvorverarbeitung…');
       const processed = _preprocessForOCR(source);
 
-      const text = await recognize(processed, (pct, msg) => _setProgress(pct, msg));
-      _lastText = text || '';
-      window.__OCR_LAST_TEXT__ = _lastText;
-      console.log('OCR RAW (erste 2000 Zeichen):\n', _lastText.slice(0, 2000));
+      let parsed = null;
 
-      _setProgress(100, '✓ Text erkannt');
+      // ── Primär: Claude Vision ─────────────────────────────────
+      try {
+        parsed = await _recognizeWithClaude(processed, (pct, msg) => _setProgress(pct, msg));
+        _setProgress(95, '✓ KI-Erkennung abgeschlossen');
+      } catch (claudeErr) {
+        // ── Fallback: Tesseract + Regex ───────────────────────────
+        console.warn('Claude Vision fehlgeschlagen → Tesseract:', claudeErr.message);
+        _setProgress(20, 'KI nicht verfügbar — lokale Erkennung…');
+        const text = await recognize(processed, (pct, msg) => _setProgress(pct, msg));
+        _lastText = text || '';
+        window.__OCR_LAST_TEXT__ = _lastText;
+        console.log('Tesseract RAW:\n', _lastText.slice(0, 2000));
+        parsed = parse(_lastText);
+      }
 
-      const parsed = parse(_lastText);
       _lastParsed = parsed;
       window.__OCR_LAST_PARSED__ = parsed;
-      console.log('OCR PARSED:', parsed);
-
+      _setProgress(100, '✓ Fertig');
       showResult(parsed);
 
-      if (!parsed.date.value && !parsed.liters.value && !parsed.totalCost.value) {
-        _setProgress(100, '✓ erkannt — aber keine Werte gefunden (Foto evtl. unscharf?)');
-      }
+      if (!parsed.date?.value && !parsed.liters?.value && !parsed.totalCost?.value)
+        _setProgress(100, '⚠ Keine Werte gefunden — ist das ein Bon?');
+
     } catch (err) {
       _setProgress(0, '✗ Fehler: ' + (err?.message || err));
       console.error(err);
