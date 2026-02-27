@@ -179,17 +179,38 @@ const OCR = (() => {
 
     // ── LITERS ───────────────────────────────────────────────────
 
-    // 1) Explizite Einheit "49,04 L" oder "L 49,04"
+    // 1) Explizite Einheit "49,04 L" (Zahl gefolgt von l/L)
     const litersWithUnit = [
       ...[...flat.matchAll(/([0-9]{1,3}[,\.][0-9]{2,3})\s*[lL]\b/g)]
          .map(m => ({ raw: m[1], value: _parseLiters(m[1]) })),
-      ...[...flat.matchAll(/\b[lL]\s*([0-9]{1,3}[,\.][0-9]{2,3})\b/g)]
+      // Fallback: "49,04 1" – alleinstehende Ziffer 1 nach 2-Dezimal-Zahl (OCR-Fehler l→1)
+      // (nach Normalisierung sollte das schon als "l" dastehen, aber doppelt hält besser)
+      ...[...flat.matchAll(/([0-9]{1,3}[,\.][0-9]{2})\s+1(?!\d)(?=\s+[0-9]{1,4}[,\.][0-9]{2})/g)]
          .map(m => ({ raw: m[1], value: _parseLiters(m[1]) })),
     ].filter(x => x.value && x.value > 1 && x.value < 250);
 
     if (litersWithUnit.length) {
-      litersWithUnit.sort((a,b) => b.value - a.value);
-      const best = litersWithUnit.find(x => x.value >= 5 && x.value <= 120) || litersWithUnit[0];
+      // Wenn mehrere Kandidaten: bevorzuge den, der mit dem Gesamtbetrag zusammenpasst
+      // (Shell-Zeile: "49,04 l 84,30 EUR" → beide matchen; Kreuzcheck löst Mehrdeutigkeit)
+      const plausible = litersWithUnit.filter(x => x.value >= 5 && x.value <= 120);
+      let best = plausible[0] || litersWithUnit[0];
+      if (plausible.length > 1 && result.totalCost.value) {
+        // Wähle den Kandidaten, bei dem total/value einen plausiblen €/L-Preis ergibt
+        const crossChecked = plausible.find(x => {
+          const ppl = result.totalCost.value / x.value;
+          return ppl >= 1.0 && ppl <= 3.5;
+        });
+        if (crossChecked) best = crossChecked;
+        else {
+          // Kleinsten nehmen (Preis ist immer größer als Liter bei normalem Tankvorgang)
+          plausible.sort((a,b) => a.value - b.value);
+          best = plausible[0];
+        }
+      } else if (plausible.length > 1) {
+        // Ohne Gesamtbetrag: kleinsten plausiblen Wert nehmen
+        plausible.sort((a,b) => a.value - b.value);
+        best = plausible[0];
+      }
       result.liters = { value: best.value, raw: best.raw, conf: 0.85 };
     }
 
@@ -238,6 +259,33 @@ const OCR = (() => {
           const best = candidates.find(x => x.value >= 5) || candidates[0];
           result.liters = { value: best.value, raw: best.raw, conf: 0.55 };
           break;
+        }
+      }
+    }
+
+    // 5) ── STRUKTUR-PARSER: Shell/Aral/BP Produktzeile ──────────────
+    // Format: "* 000002 Super FuelSave E10  49,04 l  84,30 EUR #A*"
+    // Zwei 2-Dezimal-Zahlen auf Kraftstoffzeile → kleinere=Liter, größere=Preis
+    if (!result.liters.value) {
+      const productLineRE = /(super|diesel|e10|e5|benzin|fuelsave|ultimate|v-power|regular|kraftstoff)/i;
+      for (let i = 0; i < lines.length; i++) {
+        if (!productLineRE.test(lines[i])) continue;
+        // Alle 2-Dezimal-Zahlen auf dieser Zeile
+        const nums = [...lines[i].matchAll(/\b(\d{1,3}[,.]\d{2})\b/g)]
+          .map(m => _parseLiters(m[1]))
+          .filter(v => v && v > 0);
+        if (nums.length >= 2) {
+          nums.sort((a,b) => a-b);
+          const litVal  = nums[0]; // kleinste = Liter
+          const costVal = nums[nums.length-1]; // größte = Preis
+          if (litVal >= 5 && litVal <= 120 && costVal > litVal) {
+            result.liters = { value: litVal, raw: String(litVal), conf: 0.75 };
+            // Bonus: wenn kein totalCost erkannt, aus dieser Zeile übernehmen
+            if (!result.totalCost.value && costVal > 5 && costVal < 500) {
+              result.totalCost = { value: costVal, raw: String(costVal), conf: 0.60 };
+            }
+            break;
+          }
         }
       }
     }
@@ -329,11 +377,28 @@ const OCR = (() => {
     s = s.replace(/\r\n?/g, '\n');
     s = s.replace(/\u00A0/g, ' ');
     s = s.replace(/\bEURO\b/gi, 'EUR');
+
     // Leerzeichen im Dezimalwert: "84 30 EUR" → "84,30 EUR"
     s = s.replace(/\b(\d{1,4})\s+(\d{2})\b(?=\s*(?:€|eur|euro|\/\s*[lLiI1]|l\b|liter\b))/gi, '$1,$2');
     s = s.replace(/\b(\d{1,3})\s+(\d{2})\b(?=\s*(?:super|diesel|e10|e5|benzin|kraftstoff|fuel))/gi, '$1,$2');
+
     // "1 719 EUR/I" → "1.719 EUR/I"
     s = s.replace(/\b(\d{1,2})\s+(\d{3,4})\b(?=\s*(?:€|eur|euro)\s*\/\s*[lLiI1])/gi, '$1.$2');
+
+    // ── SCHLÜSSEL-FIX: OCR liest "l" (Liter) als "1" (Ziffer) ────────
+    // Shell/BP/Aral: "49,04 1  84,30 EUR" → "49,04 l  84,30 EUR"
+    // Bedingung: Zahl(2dec) SPACE 1 SPACE Zahl(2dec) EUR/€  (die "1" ist allein → Liter)
+    s = s.replace(
+      /(\b\d{1,3}[,.]\d{2})\s+1\b(?=\s+\d{1,4}[,.]\d{2}\s*(?:€|eur|euro|\s*#|\s*$))/gi,
+      '$1 l'
+    );
+    // Auch: Zahl(2dec) SPACE 1 am Zeilenende (kein weiteres Preisfeld nötig)
+    s = s.replace(
+      /(\b\d{1,3}[,.]\d{2})\s+1\s*$/gm,
+      '$1 l'
+    );
+
+    // Ziffernabstand entfernen
     s = s.replace(/(\d)\s*([,\.])\s*(\d)/g, '$1$2$3');
     s = s.replace(/[ \t]{2,}/g, ' ');
     return s;
