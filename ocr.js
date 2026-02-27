@@ -1,19 +1,18 @@
 /**
- * OCR MODULE — Tankzettel-Erkennung via Tesseract.js (lokal)
- * Robust für Android/Samsung + GitHub Pages:
- * - window.OCR gesetzt (für inline onclick)
- * - auto-bindet file inputs (auch ohne onchange im HTML)
- * - null-sichere UI Updates (Preview/Progress/Overlay)
- * - Parser versteht EUR und "Label + Zahl in nächster Zeile"
+ * TankLog OCR — robust on mobile + improved recognition quality
+ *
+ * Fixes:
+ * - Better OCR output via canvas preprocessing (grayscale + Otsu threshold + upscale)
+ * - Tesseract parameters (DPI + PSM) for receipts
+ * - Works with existing TankLog overlay IDs
+ *
+ * IMPORTANT: Keep filename as "ocr.js" in your repo.
  */
 
 const OCR = (() => {
-
   let _worker = null;
   let _workerReady = false;
   let _loading = false;
-
-  // ── Worker ────────────────────────────────────────────────
 
   async function initWorker(onProgress) {
     if (_worker && _workerReady) return _worker;
@@ -35,6 +34,18 @@ const OCR = (() => {
         },
         langPath: 'https://tessdata.projectnaptha.com/4.0.0',
       });
+
+      // Tune for receipts (safe to ignore if unsupported)
+      try {
+        await _worker.setParameters({
+          tessedit_pageseg_mode: '6',
+          user_defined_dpi: '300',
+          preserve_interword_spaces: '1',
+        });
+      } catch (e) {
+        console.warn('OCR setParameters ignored:', e);
+      }
+
       _workerReady = true;
     } finally {
       _loading = false;
@@ -42,22 +53,106 @@ const OCR = (() => {
     return _worker;
   }
 
+  async function _fileToImageBitmap(file) {
+    const blob = file instanceof Blob ? file : new Blob([file]);
+    return await createImageBitmap(blob);
+  }
+
+  function _otsuThreshold(gray) {
+    const hist = new Array(256).fill(0);
+    for (let i = 0; i < gray.length; i++) hist[gray[i]]++;
+
+    const total = gray.length;
+    let sum = 0;
+    for (let t = 0; t < 256; t++) sum += t * hist[t];
+
+    let sumB = 0;
+    let wB = 0;
+    let varMax = 0;
+    let threshold = 128;
+
+    for (let t = 0; t < 256; t++) {
+      wB += hist[t];
+      if (wB === 0) continue;
+      const wF = total - wB;
+      if (wF === 0) break;
+
+      sumB += t * hist[t];
+      const mB = sumB / wB;
+      const mF = (sum - sumB) / wF;
+
+      const varBetween = wB * wF * (mB - mF) * (mB - mF);
+      if (varBetween > varMax) {
+        varMax = varBetween;
+        threshold = t;
+      }
+    }
+    return threshold;
+  }
+
+  async function preprocessToCanvas(file) {
+    const bmp = await _fileToImageBitmap(file);
+
+    // Upscale: receipts need big text
+    const scale = 2.0;
+    const w = Math.max(1, Math.round(bmp.width * scale));
+    const h = Math.max(1, Math.round(bmp.height * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    ctx.imageSmoothingEnabled = false;
+    ctx.drawImage(bmp, 0, 0, w, h);
+
+    const img = ctx.getImageData(0, 0, w, h);
+    const d = img.data;
+
+    const gray = new Uint8ClampedArray(w * h);
+    const contrast = 1.35;
+    const intercept = 128 * (1 - contrast);
+
+    for (let i = 0, p = 0; i < d.length; i += 4, p++) {
+      const g = Math.round(0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]);
+      let cg = Math.round(g * contrast + intercept);
+      if (cg < 0) cg = 0;
+      if (cg > 255) cg = 255;
+      gray[p] = cg;
+    }
+
+    const thr = _otsuThreshold(gray);
+    for (let p = 0, i = 0; p < gray.length; p++, i += 4) {
+      const v = gray[p] > thr ? 255 : 0;
+      d[i] = d[i + 1] = d[i + 2] = v;
+      d[i + 3] = 255;
+    }
+
+    ctx.putImageData(img, 0, 0);
+    return canvas;
+  }
+
   async function recognize(imageFile, onProgress) {
     if (onProgress) onProgress(5, 'Lade OCR-Engine…');
     const worker = await initWorker(onProgress);
-    if (onProgress) onProgress(20, 'Analysiere Bild…');
-    const { data: { text } } = await worker.recognize(imageFile);
+
+    if (onProgress) onProgress(15, 'Bereite Bild vor…');
+    const canvas = await preprocessToCanvas(imageFile);
+
+    if (onProgress) onProgress(25, 'Analysiere Bild…');
+    const { data: { text } } = await worker.recognize(canvas);
+
     if (onProgress) onProgress(100, 'Fertig');
     return text || '';
   }
 
-  // ── Helpers ────────────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // Parser
+  // ─────────────────────────────────────────────────────────────
 
   function _parseDE(s) {
     if (!s) return null;
-    const str = String(s).trim()
-      .replace(/\.(?=\d{3}\b)/g, '') // thousands
-      .replace(',', '.');
+    const str = String(s).trim().replace(/\.(?=\d{3}\b)/g, '').replace(',', '.');
     const v = parseFloat(str);
     return Number.isFinite(v) ? v : null;
   }
@@ -76,24 +171,14 @@ const OCR = (() => {
   function _normalizeOCRText(t) {
     if (!t) return '';
     let s = String(t);
-
     s = s.replace(/\r\n?/g, '\n');
     s = s.replace(/\u00A0/g, ' ');
     s = s.replace(/\bEURO\b/gi, 'EUR');
-
-    // "84 30 EUR" -> "84,30 EUR"
     s = s.replace(/\b(\d{1,4})\s+(\d{2})\b(?=\s*(?:€|eur|euro|l\b|liter\b|\/\s*l))/gi, '$1,$2');
-
-    // remove spaces around separators: "84, 30" -> "84,30"
     s = s.replace(/(\d)\s*([,\.])\s*(\d)/g, '$1$2$3');
-
-    // collapse whitespace
     s = s.replace(/[ \t]{2,}/g, ' ');
-
     return s;
   }
-
-  // ── Parser ────────────────────────────────────────────────
 
   function parse(text) {
     const flat = _normalizeOCRText(text);
@@ -106,14 +191,14 @@ const OCR = (() => {
       pricePerLiter: { value: null, raw: null, conf: 0 },
     };
 
-    // DATE: dd.mm.yyyy (auch wenn Uhrzeit dran hängt)
+    // Date
     const dm = flat.match(/\b(\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{2,4})\b/);
     if (dm) {
       const iso = _parseDate(dm[1]);
       if (iso) result.date = { value: iso, raw: dm[1], conf: 0.65 };
     }
 
-    // LITERS: "49,04 L"
+    // Liters
     const litersM = [...flat.matchAll(/([0-9]{1,3}[,\.][0-9]{2,3})\s*[lL]\b/g)]
       .map(m => ({ raw: m[1], value: _parseDE(m[1]) }))
       .filter(x => x.value && x.value > 1 && x.value < 250);
@@ -123,7 +208,7 @@ const OCR = (() => {
       result.liters = { value: best.value, raw: best.raw, conf: 0.75 };
     }
 
-    // PRICE/L: "1,719 EUR/L"
+    // Price per liter
     const pplM = [...flat.matchAll(/([0-9]{1,2}[,\.][0-9]{3,4})\s*(?:€|eur|euro)?\s*\/\s*[lL]\b/gi)]
       .map(m => ({ raw: m[1], value: _parseDE(m[1]) }))
       .filter(x => x.value && x.value > 0.5 && x.value < 5.0);
@@ -131,7 +216,7 @@ const OCR = (() => {
       result.pricePerLiter = { value: pplM[0].value, raw: pplM[0].raw, conf: 0.80 };
     }
 
-    // TOTAL: keyword same line
+    // Total cost - same line
     const totalKeySameLineRE =
       /(?:gesamt(?:betrag)?|bruttobetrag|endbetrag|summe|total|betrag|zu\s+zahlen|zahlbetrag)\b[^\d]{0,40}([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur|euro)?/gi;
     for (const m of flat.matchAll(totalKeySameLineRE)) {
@@ -142,7 +227,7 @@ const OCR = (() => {
       }
     }
 
-    // TOTAL: keyword line + value next lines (Shell typisch)
+    // Total cost - next lines
     if (!result.totalCost.value) {
       const keyLineRE = /(gesamt(?:betrag)?|bruttobetrag|endbetrag|summe|total|zu\s+zahlen|zahlbetrag|betrag)/i;
       for (let i = 0; i < lines.length; i++) {
@@ -159,7 +244,7 @@ const OCR = (() => {
       }
     }
 
-    // TOTAL: fallback biggest amount with EUR/€
+    // Total cost - biggest EUR amount
     if (!result.totalCost.value) {
       const money = [...flat.matchAll(/([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur|euro)\b/gi)]
         .map(m => ({ raw: m[1], value: _parseDE(m[1]) }))
@@ -170,7 +255,7 @@ const OCR = (() => {
       }
     }
 
-    // derive €/L if missing
+    // Derive €/L
     if (!result.pricePerLiter.value && result.totalCost.value && result.liters.value) {
       const ppl = result.totalCost.value / result.liters.value;
       if (ppl > 0.5 && ppl < 5.0) {
@@ -181,16 +266,16 @@ const OCR = (() => {
     return result;
   }
 
-  // ── UI / Overlay ───────────────────────────────────────────
+  // ─────────────────────────────────────────────────────────────
+  // UI helpers
+  // ─────────────────────────────────────────────────────────────
 
   function openOverlay() {
-    // reset inputs safely
     ['ocr-file-input','ocr-file-camera','ocr-file-gallery'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.value = '';
     });
 
-    // reset UI if those elements exist
     const previewWrap = document.getElementById('ocr-img-preview-wrap');
     if (previewWrap) previewWrap.style.display = 'none';
 
@@ -213,9 +298,9 @@ const OCR = (() => {
   }
 
   function _setProgress(pct, msg) {
+    const wrap = document.getElementById('ocr-progress-wrap');
     const fill = document.getElementById('ocr-progress-fill');
     const label = document.getElementById('ocr-progress-label');
-    const wrap = document.getElementById('ocr-progress-wrap');
     if (wrap) wrap.style.display = 'block';
     if (fill && pct !== null && pct !== undefined) fill.style.width = pct + '%';
     if (label && msg) label.textContent = msg;
@@ -228,7 +313,6 @@ const OCR = (() => {
     const url = URL.createObjectURL(file);
     img.src = url;
     wrap.style.display = 'block';
-    // revoke later
     setTimeout(() => URL.revokeObjectURL(url), 60_000);
   }
 
@@ -253,15 +337,12 @@ const OCR = (() => {
 
   async function handleFile(file) {
     if (!file) return;
-
     _setPreview(file);
-
     _setProgress(5, 'Lade OCR-Engine…');
 
     try {
       const text = await recognize(file, (pct, msg) => _setProgress(pct, msg));
       _setProgress(100, '✓ Text erkannt');
-
       const parsed = parse(text);
       _showResult(parsed);
     } catch (err) {
@@ -270,22 +351,8 @@ const OCR = (() => {
     }
   }
 
-  // Auto-bind file inputs (so it works even without inline onchange in HTML)
-  function _bindInputs() {
-    const ids = ['ocr-file-input', 'ocr-file-camera', 'ocr-file-gallery'];
-    ids.forEach(id => {
-      const el = document.getElementById(id);
-      if (!el || el.__ocrBound) return;
-      el.addEventListener('change', () => handleFile(el.files && el.files[0]));
-      el.__ocrBound = true;
-    });
-  }
-
-  document.addEventListener('DOMContentLoaded', _bindInputs);
-
   return { openOverlay, closeOverlay, handleFile, parse, recognize };
 
 })();
 
-// critical for inline onclick="OCR.openOverlay()"
 window.OCR = OCR;
