@@ -254,7 +254,8 @@
           <p style="font-size:12px;color:var(--t3);margin:6px 0 10px">Format: <code>datum,kmstand,liter,euro,notiz</code><br>Dezimalkomma, dd.mm.yyyy oder yyyy-mm-dd</p>
           <label class="btn btn-secondary btn-full" style="cursor:pointer;justify-content:center">
             📊 CSV importieren
-            <input type="file" accept=".csv,.tsv,.txt" style="display:none" onchange="App.importCSV(this)">
+            <!-- Android/Google Drive liefert teils unpassende MIME-Types → keine Filter, damit Datei nicht "gegraut" ist -->
+            <input type="file" accept="*/*" style="display:none" onchange="App.importCSV(this)">
           </label>
           <div id="csv-result" style="margin-top:10px;display:none"></div>
         </div>

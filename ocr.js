@@ -81,8 +81,8 @@ function _normalizeText(t) {
    */
   function parse(text) {
     const norm = _normalizeText(text);
-    const lines = norm.split('
-').map(l => l.trim()).filter(Boolean);
+    // Keep line structure for heuristics
+    const lines = norm.split('\\n').map(l => l.trim()).filter(Boolean);
     const flat = norm;
 
     const result = {
