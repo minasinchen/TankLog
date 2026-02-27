@@ -475,31 +475,91 @@ const OCR = (() => {
   // ─────────────────────────────────────────────────────────────
 
   /**
-   * Lädt eine Bilddatei korrekt orientiert.
-   *
-   * STRATEGIE: <img>-Element statt createImageBitmap(file) direkt.
-   * - Das <img>-Element respektiert EXIF-Orientation auf ALLEN Browsern/Plattformen
-   *   (Desktop Chrome, Android Chrome, Safari iOS) — konsistent und zuverlässig.
-   * - createImageBitmap() hingegen verhält sich je nach Browser/Version anders:
-   *   Desktop Chrome 81+ korrigiert EXIF, Android Chrome teilweise nicht → doppelt drehen.
-   * - Durch den <img>-Umweg bekommen wir immer das korrekt ausgerichtete Bild.
+   * Liest EXIF-Orientation direkt aus JPEG-Bytes.
+   * Gibt 1–8 zurück (1=normal, 3=180°, 6=90°CW, 8=90°CCW).
    */
-  function _loadImageFixed(file) {
-    return new Promise((resolve, reject) => {
-      const url = URL.createObjectURL(file);
-      const img = new Image();
-      img.onload = () => {
-        URL.revokeObjectURL(url);
-        // Auf Canvas zeichnen — img hat bereits korrekte Orientierung
-        const c = document.createElement('canvas');
-        c.width  = img.naturalWidth;
-        c.height = img.naturalHeight;
-        c.getContext('2d').drawImage(img, 0, 0);
-        resolve(c); // Canvas direkt zurückgeben (createImageBitmap nicht nötig)
-      };
-      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Bild konnte nicht geladen werden')); };
-      img.src = url;
-    });
+  function _readExifOrientation(arrayBuffer) {
+    try {
+      const view = new DataView(arrayBuffer);
+      if (view.getUint16(0) !== 0xFFD8) return 1; // kein JPEG
+      let offset = 2;
+      while (offset < view.byteLength - 4) {
+        const marker = view.getUint16(offset); offset += 2;
+        if (marker === 0xFFE1) {
+          if (view.getUint32(offset + 2) !== 0x45786966) break; // "Exif"
+          const tiff = offset + 8;
+          const le   = view.getUint16(tiff) === 0x4949;
+          const ifd  = tiff + view.getUint32(tiff + 4, le);
+          const n    = view.getUint16(ifd, le);
+          for (let i = 0; i < n; i++) {
+            const base = ifd + 2 + i * 12;
+            if (view.getUint16(base, le) === 0x0112) // Orientation tag
+              return view.getUint16(base + 8, le);
+          }
+          break;
+        } else if ((marker & 0xFF00) !== 0xFF00) break;
+        else offset += view.getUint16(offset);
+      }
+    } catch (_) {}
+    return 1;
+  }
+
+  /**
+   * Dreht/spiegelt ein ImageBitmap gemäß EXIF-Orientation auf ein Canvas.
+   */
+  function _applyOrientation(bmp, orientation) {
+    const sw = bmp.width, sh = bmp.height;
+    const swap = orientation >= 5; // 5–8 tauschen W und H
+    const cw = swap ? sh : sw;
+    const ch = swap ? sw : sh;
+    const c = document.createElement('canvas');
+    c.width = cw; c.height = ch;
+    const ctx = c.getContext('2d');
+    // Transformationsmatrix je Orientation-Wert (EXIF-Standard)
+    switch (orientation) {
+      case 2: ctx.transform(-1, 0,  0,  1, cw,  0);  break;
+      case 3: ctx.transform(-1, 0,  0, -1, cw, ch);  break;
+      case 4: ctx.transform( 1, 0,  0, -1,  0, ch);  break;
+      case 5: ctx.transform( 0, 1,  1,  0,  0,  0);  break;
+      case 6: ctx.transform( 0, 1, -1,  0, ch,  0);  break;
+      case 7: ctx.transform( 0,-1, -1,  0, ch, cw);  break;
+      case 8: ctx.transform( 0,-1,  1,  0,  0, cw);  break;
+      default: break;
+    }
+    ctx.drawImage(bmp, 0, 0);
+    return c;
+  }
+
+  /**
+   * Lädt eine Bilddatei mit garantiert korrekter Orientierung.
+   *
+   * STRATEGIE: EXIF manuell aus Bytes lesen + createImageBitmap mit
+   * imageOrientation:'none' → Browser dreht NIE automatisch → wir drehen
+   * einmal kontrolliert selbst. Funktioniert auf allen Plattformen identisch:
+   * Desktop Chrome, Android Chrome, Samsung Internet, Safari iOS.
+   */
+  async function _loadImageFixed(file) {
+    const buf = await file.arrayBuffer();
+    const orientation = _readExifOrientation(buf);
+
+    // imageOrientation:'none' deaktiviert Browser-Auto-Korrektur zuverlässig.
+    // Fallback: ohne Option (ältere Browser ignorieren das Argument sowieso).
+    let bmp;
+    try {
+      bmp = await createImageBitmap(new Blob([buf], { type: file.type }),
+                                    { imageOrientation: 'none' });
+    } catch (_) {
+      bmp = await createImageBitmap(new Blob([buf], { type: file.type }));
+    }
+
+    if (orientation === 1) {
+      // Kein Drehen nötig — trotzdem auf Canvas für einheitlichen Rückgabetyp
+      const c = document.createElement('canvas');
+      c.width = bmp.width; c.height = bmp.height;
+      c.getContext('2d').drawImage(bmp, 0, 0);
+      return c;
+    }
+    return _applyOrientation(bmp, orientation);
   }
 
   /**
