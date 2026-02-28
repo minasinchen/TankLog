@@ -1180,66 +1180,6 @@ const OCR = (() => {
     }
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // Claude Vision — primäres OCR-Backend
-  // ─────────────────────────────────────────────────────────────
-
-  async function _recognizeWithClaude(canvas, onProgress) {
-    if (onProgress) onProgress(15, 'Sende an KI…');
-
-    const MAX = 1400;
-    const sc  = Math.min(1, MAX / Math.max(canvas.width, canvas.height));
-    const c   = document.createElement('canvas');
-    c.width   = Math.round(canvas.width  * sc);
-    c.height  = Math.round(canvas.height * sc);
-    c.getContext('2d').drawImage(canvas, 0, 0, c.width, c.height);
-    const b64 = c.toDataURL('image/jpeg', 0.88).split(',')[1];
-
-    const resp = await fetch('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-20250514',
-        max_tokens: 300,
-        messages: [{
-          role: 'user',
-          content: [
-            { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: b64 } },
-            { type: 'text', text:
-`Dies ist ein Tankzettel / Kassenbon einer deutschen Tankstelle.
-Extrahiere genau diese 4 Werte und antworte NUR mit einem JSON-Objekt, ohne Erklärung, ohne Markdown:
-
-{"date":"YYYY-MM-DD","liters":Zahl,"totalCost":Zahl,"pricePerLiter":Zahl}
-
-Regeln:
-- date: Transaktionsdatum ISO-Format, oder null
-- liters: getankte Liter (typisch 20–80), oder null
-- totalCost: Gesamtbetrag EUR (typisch 30–150), oder null
-- pricePerLiter: Preis pro Liter EUR/L (typisch 1,20–2,50), oder null
-- Zahlen mit Dezimalpunkt (nicht Komma)
-- null wenn wirklich nicht lesbar` }
-          ]
-        }]
-      })
-    });
-
-    if (!resp.ok) throw new Error('HTTP ' + resp.status);
-    if (onProgress) onProgress(80, 'Werte auslesen…');
-
-    const data    = await resp.json();
-    const raw     = (data.content?.[0]?.text || '').trim();
-    console.log('Claude Vision:', raw);
-    const jsonStr = raw.replace(/^```[a-z]*\n?/i, '').replace(/\n?```$/,'').trim();
-    const p       = JSON.parse(jsonStr);
-
-    return {
-      date:          { value: p.date          || null,  raw: p.date,               conf: p.date          ? 0.97 : 0 },
-      liters:        { value: p.liters         ?? null,  raw: String(p.liters  ?? ''), conf: p.liters        != null ? 0.95 : 0 },
-      totalCost:     { value: p.totalCost      ?? null,  raw: String(p.totalCost ?? ''), conf: p.totalCost    != null ? 0.95 : 0 },
-      pricePerLiter: { value: p.pricePerLiter  ?? null,  raw: String(p.pricePerLiter ?? ''), conf: p.pricePerLiter != null ? 0.90 : 0 },
-    };
-  }
-
   async function _runOCR(source) {
     try {
       _setProgress(12, 'Bildvorverarbeitung…');
@@ -1247,20 +1187,13 @@ Regeln:
 
       let parsed = null;
 
-      // ── Primär: Claude Vision ─────────────────────────────────
-      try {
-        parsed = await _recognizeWithClaude(processed, (pct, msg) => _setProgress(pct, msg));
-        _setProgress(95, '✓ KI-Erkennung abgeschlossen');
-      } catch (claudeErr) {
-        // ── Fallback: Tesseract + Regex ───────────────────────────
-        console.warn('Claude Vision fehlgeschlagen → Tesseract:', claudeErr.message);
-        _setProgress(20, 'KI nicht verfügbar — lokale Erkennung…');
-        const text = await recognize(processed, (pct, msg) => _setProgress(pct, msg));
-        _lastText = text || '';
-        window.__OCR_LAST_TEXT__ = _lastText;
-        console.log('Tesseract RAW:\n', _lastText.slice(0, 2000));
-        parsed = parse(_lastText);
-      }
+      // ── Tesseract + Regex ─────────────────────────────────────
+      _setProgress(20, 'Lokale Texterkennung…');
+      const text = await recognize(processed, (pct, msg) => _setProgress(pct, msg));
+      _lastText = text || '';
+      window.__OCR_LAST_TEXT__ = _lastText;
+      console.log('Tesseract RAW:\n', _lastText.slice(0, 2000));
+      parsed = parse(_lastText);
 
       _lastParsed = parsed;
       window.__OCR_LAST_PARSED__ = parsed;

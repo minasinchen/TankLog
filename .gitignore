@@ -1,0 +1,22 @@
+# Lokale Konfiguration (API-Keys, persönliche Einstellungen — NIE einchecken)
+config.local.js
+
+# Claude Code interne Dateien
+.claude/
+
+# Betriebssystem
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/settings.json
+*.swp
+*.swo
+
+# Node.js (falls mal ein Build-Tool genutzt wird)
+node_modules/
+
+# Python (falls mal ein lokaler Server genutzt wird)
+__pycache__/
+*.pyc
