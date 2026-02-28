@@ -222,9 +222,9 @@ const Calc = {
 
       const odometer = this.parseDE(kmRaw);
 
-      const uid = Date.now().toString(36) + i.toString(36) + Math.random().toString(36).slice(2, 5);
+      // _id is assigned in importCSV after deduplication, not here
       entries.push({
-        _id: `fuel_${vehicleId}_${date}_${uid}`,
+        _csvRow: rowNum,
         type: 'fuel',
         vehicleId,
         date,

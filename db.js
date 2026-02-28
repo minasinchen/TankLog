@@ -112,6 +112,16 @@ const DB = (() => {
     return remove(id);
   }
 
+  /**
+   * Find an existing fuel entry matching vehicleId + date + odometer.
+   * Returns the first match or null. Used for CSV import deduplication.
+   */
+  async function findMatchingFuelEntry(vehicleId, date, odometer) {
+    if (odometer == null) return null; // odometer required for reliable matching
+    const entries = await getFuelEntries(vehicleId);
+    return entries.find(e => e.date === date && e.odometer === odometer) || null;
+  }
+
   // ── Maintenance ───────────────────────────────────────────────
 
   async function getMaintenances(vehicleId) {
@@ -210,7 +220,7 @@ const DB = (() => {
   return {
     getDb,
     getVehicles, saveVehicle, deleteVehicle,
-    getFuelEntries, saveFuelEntry, deleteFuelEntry,
+    getFuelEntries, saveFuelEntry, deleteFuelEntry, findMatchingFuelEntry,
     getMaintenances, getAllMaintenances, saveMaintenance, deleteMaintenance,
     getCosts, saveCost, deleteCost,
     getSettings, saveSettings,

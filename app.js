@@ -1262,28 +1262,83 @@ const App = (() => {
       const text = await file.text();
       const { entries, skipped } = Calc.parseCSV(text, _currentVehicleId);
 
-      // Bulk save via importAll
-      const count = await DB.importAll(entries, 'merge');
+      // ── Deduplication ─────────────────────────────────────────
+      // Fetch all existing entries once to avoid N separate DB calls
+      const existing = await DB.getFuelEntries(_currentVehicleId);
+      const TOLERANCE = 0.05;
 
-      // Show results
+      const toImport  = []; // genuinely new entries
+      const dupes     = []; // exact duplicates (within tolerance) → skip silently
+      const conflicts = []; // same key, values differ → report, don't import
+
+      for (const entry of entries) {
+        const { _csvRow, ...data } = entry; // strip internal row-tracking field
+
+        if (data.odometer == null) {
+          // Can't reliably deduplicate without odometer → treat as new
+          data._id = `fuel_${data.vehicleId}_${data.date}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+          toImport.push(data);
+          continue;
+        }
+
+        const match = existing.find(e => e.date === data.date && e.odometer === data.odometer);
+
+        if (!match) {
+          // No match on (date + odometer) → new entry, assign ID now
+          data._id = `fuel_${data.vehicleId}_${data.date}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+          toImport.push(data);
+        } else {
+          const litDiff  = Math.abs((match.liters     || 0) - (data.liters     || 0));
+          const costDiff = Math.abs((match.totalCost  || 0) - (data.totalCost  || 0));
+          if (litDiff <= TOLERANCE && costDiff <= TOLERANCE) {
+            dupes.push({ row: _csvRow });
+          } else {
+            conflicts.push({ row: _csvRow, entry: data, existing: match });
+          }
+        }
+      }
+
+      // Only import entries that passed deduplication
+      if (toImport.length) await DB.importAll(toImport, 'merge');
+
+      // ── Result dialog ─────────────────────────────────────────
       const bodyEl = document.getElementById('csv-result-body');
-      const total = entries.length + skipped.length;
-      bodyEl.innerHTML = `
-        <div style="font-family:var(--font-mono);font-size:13px;margin-bottom:12px">
-          <span style="color:var(--green)">✓ ${entries.length} importiert</span>
-          ${skipped.length ? `&nbsp;&nbsp;<span style="color:var(--orange)">⚠ ${skipped.length} übersprungen</span>` : ''}
-          &nbsp;&nbsp;<span style="color:var(--t3)">von ${total} Zeilen</span>
-        </div>
-        ${skipped.length ? `
-          <div style="font-family:var(--font-mono);font-size:11px;color:var(--t2);margin-bottom:8px">Übersprungene Zeilen:</div>
-          ${skipped.map(s => `
-            <div class="csv-result-row">
-              <span class="csv-row-num">Z.${s.row}</span>
-              <span class="csv-status" style="color:var(--orange)">⚠</span>
-              <span class="csv-reason">${esc(s.reason)}</span>
-            </div>`).join('')}` : ''}
-        <button class="btn btn-primary btn-full" style="margin-top:16px" onclick="App.closeOverlay('overlay-csv-result')">Schließen</button>
-      `;
+      let html = `
+        <div style="font-family:var(--font-mono);font-size:13px;margin-bottom:14px;display:flex;flex-direction:column;gap:4px">
+          <span style="color:var(--green)">✓ ${toImport.length} neu importiert</span>
+          <span style="color:var(--t2)">= ${dupes.length} exakte Duplikate übersprungen</span>
+          ${conflicts.length ? `<span style="color:var(--orange)">⚠ ${conflicts.length} Konflikte — nicht importiert</span>` : ''}
+          ${skipped.length  ? `<span style="color:var(--orange)">⚠ ${skipped.length} ungültige Zeilen</span>` : ''}
+        </div>`;
+
+      if (conflicts.length) {
+        html += `<div style="font-family:var(--font-mono);font-size:11px;color:var(--orange);margin-bottom:8px">
+          Konflikte — gleiche(r) Datum + km, abweichende Werte. Bitte manuell prüfen:
+        </div>`;
+        for (const { row, entry, existing: ex } of conflicts) {
+          html += `
+            <div style="margin-bottom:10px;padding:10px;background:rgba(251,146,60,0.08);border:1px solid rgba(251,146,60,0.25);border-radius:8px;font-size:12px">
+              <div style="font-family:var(--font-mono);font-size:11px;color:var(--t3);margin-bottom:6px">Z.${row} — ${entry.date}, ${entry.odometer} km</div>
+              <div style="display:flex;gap:16px">
+                <div><span style="color:var(--t2)">Vorhanden:</span>&nbsp;${(ex.liters||0).toFixed(2)} L &middot; ${(ex.totalCost||0).toFixed(2)} €</div>
+                <div><span style="color:var(--orange)">CSV:</span>&nbsp;${(entry.liters||0).toFixed(2)} L &middot; ${(entry.totalCost||0).toFixed(2)} €</div>
+              </div>
+            </div>`;
+        }
+      }
+
+      if (skipped.length) {
+        html += `<div style="font-family:var(--font-mono);font-size:11px;color:var(--t2);margin-bottom:6px;margin-top:4px">Ungültige Zeilen:</div>`;
+        html += skipped.map(s => `
+          <div class="csv-result-row">
+            <span class="csv-row-num">Z.${s.row}</span>
+            <span class="csv-status" style="color:var(--orange)">⚠</span>
+            <span class="csv-reason">${esc(s.reason)}</span>
+          </div>`).join('');
+      }
+
+      html += `<button class="btn btn-primary btn-full" style="margin-top:16px" onclick="App.closeOverlay('overlay-csv-result')">Schließen</button>`;
+      bodyEl.innerHTML = html;
 
       await refreshCurrentView();
       openOverlay('overlay-csv-result');

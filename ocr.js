@@ -1,16 +1,17 @@
 /**
- * TankLog OCR — Rectify v6
+ * TankLog OCR — Rectify v7
  *
- * NEU in v6:
- * ✅ EXIF-Rotation: Samsung & iOS speichern Fotos gedreht → createImageBitmap ignoriert
- *    das auf Android Chrome → OCR sieht das Bild seitlich → gar nichts erkannt.
- *    Fix: EXIF-Orientation wird manuell aus JPEG-Bytes ausgelesen und Bild gedreht.
- * ✅ Bildvorverarbeitung vor OCR: Graustufen + adaptiver Kontrast-Boost + leichtes Schärfen.
- *    Hilft bei Foto-vom-Foto (Moiré, Bildschirmreflexion) und schlechtem Licht.
- * ✅ Auflösungsbegrenzung für OCR (max. 2400px längste Seite): Samsung produziert
- *    20MP-Fotos, Tesseract auf Mobile bricht bei zu großen Bildern ab oder ist sehr langsam.
- * ✅ Liter-Sanity: liters == totalCost (Preis statt Liter erkannt) wird abgefangen.
- * ✅ PPL-Erkennung: isolierte 4-Dezimal-Zahlen als Fallback.
+ * NEU in v7:
+ * ✅ Strikte Konsistenzprüfung: Auto-Korrektur nur wenn BEIDE Quellfelder stark genug sind.
+ * ✅ contextStrength pro Kandidat: 'labeled' > 'label-nearby' > 'isolated' > 'brute-force'.
+ * ✅ Abgeleiteter ppl wird nur gesetzt, wenn Liter-Quelle nicht 'brute-force' ist.
+ * ✅ ppl-Ableitung außerhalb [0.900–3.000] wird still verworfen (kein falscher Wert im Feld).
+ * ✅ Tap-Workflow: Nutzer tippt direkt auf Beleg-Region → OCR nur diese Zone.
+ * ✅ Status pro Feld: 'safe' / 'uncertain' / 'derived' / 'conflicting' / 'missing'.
+ * ✅ UI zeigt Alternativen wenn ppl-Kandidaten eng beieinander liegen.
+ *
+ * Aus v6:
+ * ✅ EXIF-Rotation, Bildvorverarbeitung, Auflösungsbegrenzung, Liter-Sanity.
  */
 
 const OCR = (() => {
@@ -85,16 +86,52 @@ const OCR = (() => {
     handles: [],
     enabled: false,
     scale: 1,
-    offsetX: 0,   // ← NEU: horizontal offset wenn Bild schmaler als wrap
-    offsetY: 0,   // ← NEU: vertical offset wenn Bild kürzer als maxH
-    dispW: 0,     // canvas logical width (CSS px)
-    dispH: 0,     // canvas logical height (CSS px)
-    previewEl: null,  // ← NEU: Warp-Vorschau canvas
+    offsetX: 0,
+    offsetY: 0,
+    dispW: 0,
+    dispH: 0,
+    previewEl: null,
     btnAuto: null,
   };
 
+  // Für Tap-Workflow: zuletzt verwendetes begradigtes Canvas
+  let _lastWarped = null;
+  // Tap-Modus: welches Feld wird getippt ('liters'|'totalCost'|'pricePerLiter'|'odometer'|null)
+  let _tapTarget = null;
+
   // ─────────────────────────────────────────────────────────────
-  // Parser — improved liters + €/L
+  // Plausibilitätsgrenzen für Kraftstoff (DE/EU)
+  // ─────────────────────────────────────────────────────────────
+
+  const _RANGES = {
+    liters:        { safe: [5, 120],     warn: [2, 200]   },
+    totalCost:     { safe: [5, 300],     warn: [2, 500]   },
+    pricePerLiter: { safe: [1.000, 2.200], warn: [0.900, 3.000] },
+  };
+
+  // Gibt 'safe' | 'warn' | 'outside' zurück
+  function _rangeStatus(field, v) {
+    if (v == null) return 'outside';
+    const r = _RANGES[field];
+    if (!r) return 'safe';
+    if (v >= r.safe[0] && v <= r.safe[1]) return 'safe';
+    if (v >= r.warn[0] && v <= r.warn[1]) return 'warn';
+    return 'outside';
+  }
+
+  // Ein Feld gilt als "stark" für die Konsistenzprüfung:
+  // totalCost / liters: conf >= 0.72 und kein 'brute-force'-Ursprung
+  // pricePerLiter:      zusätzlich contextStrength === 'labeled' oder 'label-nearby'
+  function _isStrong(f, fieldName) {
+    if (!f || !f.value) return false;
+    if (fieldName === 'pricePerLiter') {
+      return (f.contextStrength === 'labeled' || f.contextStrength === 'label-nearby') && f.conf >= 0.70;
+    }
+    return f.conf >= 0.72 && f.contextStrength !== 'brute-force';
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Parser — v7: strikte Konsistenz + contextStrength
   // ─────────────────────────────────────────────────────────────
 
   function parse(text) {
@@ -102,10 +139,10 @@ const OCR = (() => {
     const lines = flat.split('\n').map(l => l.trim()).filter(Boolean);
 
     const result = {
-      date:          { value: null, raw: null, conf: 0 },
-      liters:        { value: null, raw: null, conf: 0 },
-      totalCost:     { value: null, raw: null, conf: 0 },
-      pricePerLiter: { value: null, raw: null, conf: 0 },
+      date:          { value: null, raw: null, conf: 0, source: 'ocr', plausibility: 0 },
+      liters:        { value: null, raw: null, conf: 0, source: 'ocr', plausibility: 0 },
+      totalCost:     { value: null, raw: null, conf: 0, source: 'ocr', plausibility: 0 },
+      pricePerLiter: { value: null, raw: null, conf: 0, source: 'ocr', plausibility: 0 },
     };
 
     // ── DATE ────────────────────────────────────────────────────
@@ -153,41 +190,63 @@ const OCR = (() => {
     // ── PRICE PER LITER ──────────────────────────────────────────
     const pplCandidates = [];
 
-    // "1,719 EUR/l", "1.719 EUR/1", "1,719 EUR /I", "EUR/l 1,719"
+    // Stärkstes Signal: Zahl direkt vor EUR/l — z.B. "1,454 EUR/l", "1.719 EUR/1"
     for (const m of flat.matchAll(/([0-9]{1,2}[,\.][0-9]{3,4})\s*(?:€|eur|euro)?\s*\/\s*([lLiI1])\b/gi)) {
       const v = _parsePricePerLiter(m[1]);
-      if (v && v > 0.8 && v < 3.5) pplCandidates.push({ raw: m[1], value: v, conf: 0.86 });
+      if (v && v > 0.8 && v < 3.5) pplCandidates.push({ raw: m[1], value: v, conf: 0.88, contextStrength: 'labeled' });
     }
-    // "EUR/l: 1,719" or "EUR/l = 1.719"
+    // Stärkstes Signal rückwärts: "EUR/l: 1,454" oder "EUR/l = 1.719"
     for (const m of flat.matchAll(/(?:€|eur|euro)\s*\/\s*([lLiI1])\s*[:=]?\s*([0-9]{1,2}[,\.][0-9]{3,4})/gi)) {
       const v = _parsePricePerLiter(m[2]);
-      if (v && v > 0.8 && v < 3.5) pplCandidates.push({ raw: m[2], value: v, conf: 0.78 });
+      if (v && v > 0.8 && v < 3.5) pplCandidates.push({ raw: m[2], value: v, conf: 0.82, contextStrength: 'labeled' });
     }
-    // Keine Einheit: Zahl mit 3-4 Dezimalstellen im Kontext "Preis/L" Label
+    // Mittleres Signal: Zahl nahe Preis/L-Label (andere Zeile)
     for (let i = 0; i < lines.length; i++) {
       if (/preis\s*\/?\s*l\b|literpreis|kraftstoffpreis/i.test(lines[i])) {
         const look = [lines[i], lines[i+1]].filter(Boolean).join(' ');
         const m = look.match(/([0-9]{1,2}[,\.][0-9]{3,4})/);
         if (m) {
           const v = _parsePricePerLiter(m[1]);
-          if (v && v > 0.8 && v < 3.5) pplCandidates.push({ raw: m[1], value: v, conf: 0.75 });
+          if (v && v > 0.8 && v < 3.5) pplCandidates.push({ raw: m[1], value: v, conf: 0.75, contextStrength: 'label-nearby' });
         }
       }
     }
-    // Alle isolierten Zahlen mit 3-4 Dezimalstellen → wahrscheinlich €/L
-    // (z.B. "1,719" allein auf einer Zeile, oder nach Sternchen wie "*1,719")
+    // Schwaches Signal: isolierte Zahl mit 3-4 Dezimalstellen ohne klaren Kontext
+    // Conf bewusst niedrig — darf NICHT automatisch als "sicher" gelten
     for (const m of flat.matchAll(/(?:^|[\s*#])([1-2][,\.][0-9]{3,4})(?:\s|$)/gm)) {
       const v = _parsePricePerLiter(m[1]);
-      if (v && v > 1.0 && v < 3.0) pplCandidates.push({ raw: m[1], value: v, conf: 0.65 });
+      if (v && v > 1.0 && v < 3.0) pplCandidates.push({ raw: m[1], value: v, conf: 0.40, contextStrength: 'isolated' });
     }
 
     if (pplCandidates.length) {
-      pplCandidates.sort((a,b) => {
-        // Konfidenz zuerst, dann Nähe zu 1.70 (typischer Tankstellenpreis)
+      // Kleiner Bonus für typisches DE-Preismuster (endet auf 9) — nur bei nicht-isolierten
+      for (const c of pplCandidates) {
+        if (Math.round(c.value * 1000) % 10 === 9 && c.contextStrength !== 'isolated')
+          c.conf = Math.min(0.99, c.conf + 0.05);
+      }
+      // Sortierung: labeled > label-nearby > isolated; danach conf, dann Nähe zu 1.70
+      const _ctxRank = { labeled: 3, 'label-nearby': 2, isolated: 1 };
+      pplCandidates.sort((a, b) => {
+        const rd = (_ctxRank[b.contextStrength] || 0) - (_ctxRank[a.contextStrength] || 0);
+        if (rd !== 0) return rd;
         if (Math.abs(a.conf - b.conf) > 0.05) return b.conf - a.conf;
         return Math.abs(a.value - 1.70) - Math.abs(b.value - 1.70);
       });
-      result.pricePerLiter = pplCandidates[0];
+      result.pricePerLiter = { ...pplCandidates[0], source: 'ocr' };
+      // Alternativen für UI-Anzeige (max. 2 weitere)
+      if (pplCandidates.length > 1)
+        result.pricePerLiter._alts = pplCandidates.slice(1, 3).map(c => ({ value: c.value, raw: c.raw, contextStrength: c.contextStrength }));
+    }
+    // Fallback: 4-Ziffern-Ganzzahl ("1719") oder 2-Dezimal-Wert ("1,71") — sehr schwach
+    if (!result.pricePerLiter.value) {
+      for (const m of flat.matchAll(/\b([12]\d{3}|[12][,\.]\d{2})\b/g)) {
+        const norm = _normalizePPLRaw(m[1]);
+        if (norm && norm.value >= 1.0 && norm.value <= 2.5) {
+          result.pricePerLiter = { value: norm.value, raw: m[1], conf: 0.38, source: norm.source,
+            contextStrength: 'isolated', plausibility: 0 };
+          break;
+        }
+      }
     }
 
     // ── LITERS ───────────────────────────────────────────────────
@@ -224,17 +283,16 @@ const OCR = (() => {
         plausible.sort((a,b) => a.value - b.value);
         best = plausible[0];
       }
-      result.liters = { value: best.value, raw: best.raw, conf: 0.85 };
+      result.liters = { value: best.value, raw: best.raw, conf: 0.88, contextStrength: 'unit' };
     }
 
     // 2) Label-Zeile: "Menge / Liter / Volumen / Kraftstoffmenge"
-    //    → suche Zahl in gleicher Zeile ODER der nächsten Zeile
     if (!result.liters.value) {
       const litersLabelRE = /(?:kraftstoffmenge|menge|liter|vol(?:umen)?|mng|ltrs?|getankt)\b[^\d]{0,25}([0-9]{1,3}[,\.][0-9]{2,3})/gi;
       for (const m of flat.matchAll(litersLabelRE)) {
         const v = _parseLiters(m[1]);
         if (v && v > 1 && v < 250) {
-          result.liters = { value: v, raw: m[1], conf: 0.82 };
+          result.liters = { value: v, raw: m[1], conf: 0.82, contextStrength: 'label' };
           break;
         }
       }
@@ -249,15 +307,14 @@ const OCR = (() => {
         if (m) {
           const v = _parseLiters(m[1]);
           if (v && v > 1 && v < 250) {
-            result.liters = { value: v, raw: m[1], conf: 0.80 };
+            result.liters = { value: v, raw: m[1], conf: 0.80, contextStrength: 'label' };
             break;
           }
         }
       }
     }
 
-    // 4) Kraftstofftyp-Kontext: "Super E10\n43,04\n53,30"
-    //    Zahl nach Kraftstofftyp-Zeile, die nicht das Gesamtbetrag ist
+    // 4) Kraftstofftyp-Kontext
     if (!result.liters.value) {
       const fuelRE = /(diesel|super\s*e?10?|e10|e5|benzin|kraftstoff|fuel|regular)/i;
       for (let i = 0; i < lines.length; i++) {
@@ -270,33 +327,28 @@ const OCR = (() => {
         }
         if (candidates.length) {
           const best = candidates.find(x => x.value >= 5) || candidates[0];
-          result.liters = { value: best.value, raw: best.raw, conf: 0.55 };
+          result.liters = { value: best.value, raw: best.raw, conf: 0.55, contextStrength: 'context' };
           break;
         }
       }
     }
 
     // 5) ── STRUKTUR-PARSER: Shell/Aral/BP Produktzeile ──────────────
-    // Format: "* 000002 Super FuelSave E10  49,04 l  84,30 EUR #A*"
-    // Zwei 2-Dezimal-Zahlen auf Kraftstoffzeile → kleinere=Liter, größere=Preis
     if (!result.liters.value) {
       const productLineRE = /(super|diesel|e10|e5|benzin|fuelsave|ultimate|v-power|regular|kraftstoff)/i;
       for (let i = 0; i < lines.length; i++) {
         if (!productLineRE.test(lines[i])) continue;
-        // Alle 2-Dezimal-Zahlen auf dieser Zeile
         const nums = [...lines[i].matchAll(/\b(\d{1,3}[,.]\d{2})\b/g)]
           .map(m => _parseLiters(m[1]))
           .filter(v => v && v > 0);
         if (nums.length >= 2) {
           nums.sort((a,b) => a-b);
-          const litVal  = nums[0]; // kleinste = Liter
-          const costVal = nums[nums.length-1]; // größte = Preis
+          const litVal  = nums[0];
+          const costVal = nums[nums.length-1];
           if (litVal >= 5 && litVal <= 120 && costVal > litVal) {
-            result.liters = { value: litVal, raw: String(litVal), conf: 0.75 };
-            // Bonus: wenn kein totalCost erkannt, aus dieser Zeile übernehmen
-            if (!result.totalCost.value && costVal > 5 && costVal < 500) {
+            result.liters = { value: litVal, raw: String(litVal), conf: 0.75, contextStrength: 'structure' };
+            if (!result.totalCost.value && costVal > 5 && costVal < 500)
               result.totalCost = { value: costVal, raw: String(costVal), conf: 0.60 };
-            }
             break;
           }
         }
@@ -317,54 +369,190 @@ const OCR = (() => {
     }
 
     // 6) ── BRUTE-FORCE FALLBACK: Liter aus Gesamtbetrag + allen Zahlen im Text ─
-    // Wenn immer noch kein Liter-Wert: suche ALLE 2-Dezimal-Zahlen im Text,
-    // und nehme die, bei der total / zahl einen plausiblen Kraftstoffpreis ergibt
+    // Markiert bewusst als 'brute-force' — darf NICHT als Basis für ppl-Ableitung dienen
     if (!result.liters.value && result.totalCost.value) {
       const allNums = [...flat.matchAll(/\b(\d{1,3}[,.]\d{2})\b/g)]
         .map(m => _parseLiters(m[1]))
         .filter(v => v && v >= 5 && v <= 120 && Math.abs(v - result.totalCost.value) > 0.5);
-      for (const v of allNums) {
-        const ppl = result.totalCost.value / v;
-        if (ppl >= 1.20 && ppl <= 2.90) {
-          result.liters = { value: v, raw: String(v), conf: 0.60 };
-          console.log('OCR: Liter per Brute-Force gefunden:', v, '→', ppl.toFixed(3), '€/L');
-          break;
-        }
+      // Bevorzuge Werte im typischen Bereich 15–80L; nimm nicht den ersten blinden Treffer
+      const scoredBF = allNums
+        .map(v => ({ v, ppl: result.totalCost.value / v }))
+        .filter(x => x.ppl >= 1.20 && x.ppl <= 2.90)
+        .sort((a, b) => {
+          // Bevorzuge mittleren Bereich (30L), dann ppl-Nähe zu 1.70
+          const aScore = Math.abs(a.v - 40) + Math.abs(a.ppl - 1.70) * 10;
+          const bScore = Math.abs(b.v - 40) + Math.abs(b.ppl - 1.70) * 10;
+          return aScore - bScore;
+        });
+      if (scoredBF.length) {
+        const best = scoredBF[0];
+        result.liters = { value: best.v, raw: String(best.v), conf: 0.55, contextStrength: 'brute-force' };
+        console.log('OCR: Liter per Brute-Force (schwach):', best.v, '→', best.ppl.toFixed(3), '€/L');
       }
     }
 
-    // Total + €/L → Liter berechnen (stark)
-    if (result.totalCost.value && result.pricePerLiter.value) {
-      const derivedL = result.totalCost.value / result.pricePerLiter.value;
-      if (derivedL > 1 && derivedL < 250) {
-        if (!result.liters.value || Math.abs(result.liters.value - derivedL) / derivedL > 0.10) {
-          result.liters = { value: +derivedL.toFixed(2), raw: 'berechnet', conf: 0.82 };
-        }
-      }
-    }
-
-    // Liter + Total → €/L berechnen (nur wenn Liter plausibel)
-    if (result.totalCost.value && result.liters.value && result.liters.raw !== 'berechnet') {
-      const derivedP = result.totalCost.value / result.liters.value;
-      if (derivedP > 0.8 && derivedP < 3.5) {
-        const p = result.pricePerLiter.value;
-        // Als "bogus" gilt: exakt 1.0 (Rechenkreis) oder fehlt oder weicht >8% ab
-        const looksBogus = (p != null) && (Math.abs(p - 1.0) < 0.005);
-        if (!p || looksBogus || Math.abs(p - derivedP) / derivedP > 0.08) {
-          result.pricePerLiter = { value: +derivedP.toFixed(4), raw: 'berechnet', conf: 0.72 };
-        }
-      }
-    }
-
-    // Sanity clamp
-    if (result.liters.value && (result.liters.value < 1 || result.liters.value > 200))
-      result.liters.conf = Math.min(result.liters.conf, 0.25);
-    if (result.totalCost.value && (result.totalCost.value < 2 || result.totalCost.value > 500))
-      result.totalCost.conf = Math.min(result.totalCost.conf, 0.25);
-    if (result.pricePerLiter.value && (result.pricePerLiter.value < 0.8 || result.pricePerLiter.value > 3.5))
-      result.pricePerLiter.conf = Math.min(result.pricePerLiter.conf, 0.25);
+    // ── STRIKTE KONSISTENZPRÜFUNG & ABLEITUNG ────────────────────
+    _validateFinalize(result);
 
     return result;
+  }
+
+  /**
+   * Konsistenzprüfung + Ableitung fehlender Werte.
+   * Kernregeln:
+   * - Auto-Korrektur nur wenn BEIDE stützenden Felder "stark" sind (_isStrong).
+   * - ppl-Ableitung aus Liter+Betrag: Liter muss contextStrength !== 'brute-force' haben.
+   * - Abgeleiteter ppl außerhalb [0.900, 3.000] wird verworfen (kein falscher Wert).
+   * - Status pro Feld: 'safe' | 'uncertain' | 'derived' | 'conflicting' | 'missing'.
+   */
+  function _validateFinalize(result) {
+    const tot = result.totalCost;
+    const lit = result.liters;
+    const ppl = result.pricePerLiter;
+    const has = f => f && f.value != null;
+
+    if (has(tot) && has(lit) && has(ppl)) {
+      // ── Alle 3 Felder: Abweichung berechnen ─────────────────────
+      const dLit = Math.abs(lit.value - tot.value / ppl.value) / lit.value;
+      const dTot = Math.abs(tot.value - lit.value * ppl.value) / tot.value;
+      const dPpl = Math.abs(ppl.value - tot.value / lit.value) / ppl.value;
+
+      if (Math.max(dLit, dTot, dPpl) < 0.03) {
+        // Alle drei konsistent
+        lit.status = tot.status = ppl.status = 'safe';
+      } else {
+        console.warn(`OCR Konsistenz: dLit=${dLit.toFixed(3)} dTot=${dTot.toFixed(3)} dPpl=${dPpl.toFixed(3)}`);
+        // Größte Abweichung ist wahrscheinlichster Fehler
+        if (dLit >= dTot && dLit >= dPpl && dLit > 0.05) {
+          // Liter ist Ausreißer → ersetze nur wenn tot+ppl stark
+          if (_isStrong(tot, 'totalCost') && _isStrong(ppl, 'pricePerLiter')) {
+            const derived = +(tot.value / ppl.value).toFixed(2);
+            if (_rangeStatus('liters', derived) !== 'outside') {
+              console.warn('OCR Konsistenz: Liter korrigiert', lit.value, '→', derived);
+              lit.value = derived; lit.source = 'derived'; lit.status = 'derived';
+              lit.reason = `${tot.value.toFixed(2)} € ÷ ${ppl.value.toFixed(4)} €/L`;
+              tot.status = ppl.status = 'safe';
+            } else {
+              lit.status = 'conflicting'; tot.status = ppl.status = 'safe';
+            }
+          } else {
+            lit.status = 'conflicting'; tot.status = ppl.status = 'uncertain';
+          }
+        } else if (dTot >= dLit && dTot >= dPpl && dTot > 0.05) {
+          // Betrag ist Ausreißer → ersetze nur wenn lit+ppl stark
+          if (_isStrong(lit, 'liters') && _isStrong(ppl, 'pricePerLiter')) {
+            const derived = +(lit.value * ppl.value).toFixed(2);
+            if (_rangeStatus('totalCost', derived) !== 'outside') {
+              console.warn('OCR Konsistenz: Betrag korrigiert', tot.value, '→', derived);
+              tot.value = derived; tot.source = 'derived'; tot.status = 'derived';
+              tot.reason = `${lit.value.toFixed(2)} L × ${ppl.value.toFixed(4)} €/L`;
+              lit.status = ppl.status = 'safe';
+            } else {
+              tot.status = 'conflicting'; lit.status = ppl.status = 'safe';
+            }
+          } else {
+            tot.status = 'conflicting'; lit.status = ppl.status = 'uncertain';
+          }
+        } else if (dPpl > 0.05) {
+          // ppl ist Ausreißer → ersetze NUR wenn tot+lit stark und Ergebnis plausibel
+          // WICHTIG: ein labeled ppl wird NICHT durch Ableitung überschrieben
+          if (ppl.contextStrength === 'labeled' && ppl.conf >= 0.80) {
+            // labeled ppl hat Vorrang → eher Liter oder Betrag anpassen
+            ppl.status = 'safe';
+            lit.status = 'uncertain'; tot.status = 'uncertain';
+          } else if (_isStrong(tot, 'totalCost') && _isStrong(lit, 'liters')) {
+            const derived = +(tot.value / lit.value).toFixed(4);
+            const st = _rangeStatus('pricePerLiter', derived);
+            if (st !== 'outside') {
+              console.warn('OCR Konsistenz: €/L korrigiert', ppl.value, '→', derived);
+              ppl.value = derived; ppl.source = 'derived'; ppl.status = 'derived';
+              ppl.reason = `${tot.value.toFixed(2)} € ÷ ${lit.value.toFixed(2)} L`;
+              if (st === 'warn') ppl.status = 'uncertain'; // abgeleiteter Wert im Warnbereich
+              tot.status = lit.status = 'safe';
+            } else {
+              ppl.status = 'conflicting'; tot.status = lit.status = 'safe';
+            }
+          } else {
+            ppl.status = 'conflicting'; tot.status = lit.status = 'uncertain';
+          }
+        }
+      }
+
+    } else {
+      // ── 2 Felder: fehlendes ableiten ────────────────────────────
+
+      if (has(tot) && has(ppl) && !has(lit)) {
+        // ppl muss zumindest 'label-nearby' sein, damit Liter sinnvoll abgeleitet wird
+        const pplOk = ppl.contextStrength === 'labeled' || ppl.contextStrength === 'label-nearby';
+        if (tot.conf >= 0.65 && ppl.conf >= 0.65 && pplOk) {
+          const derived = +(tot.value / ppl.value).toFixed(2);
+          if (_rangeStatus('liters', derived) !== 'outside') {
+            lit.value = derived; lit.source = 'derived'; lit.conf = 0.72;
+            lit.contextStrength = 'derived';
+            lit.reason = `${tot.value.toFixed(2)} € ÷ ${ppl.value.toFixed(4)} €/L`;
+            lit.status = _rangeStatus('liters', derived) === 'safe' ? 'derived' : 'uncertain';
+          }
+        }
+        tot.status = tot.status || (tot.conf >= 0.80 ? 'safe' : 'uncertain');
+        ppl.status = ppl.status || (ppl.conf >= 0.80 ? 'safe' : 'uncertain');
+      }
+
+      if (has(tot) && has(lit) && !has(ppl)) {
+        // ppl nur ableiten wenn Liter NICHT aus Brute-Force stammt
+        const litOk = lit.contextStrength !== 'brute-force' && lit.conf >= 0.70;
+        if (tot.conf >= 0.65 && litOk) {
+          const derived = +(tot.value / lit.value).toFixed(4);
+          const st = _rangeStatus('pricePerLiter', derived);
+          if (st !== 'outside') {
+            ppl.value = derived; ppl.source = 'derived'; ppl.conf = 0.70;
+            ppl.contextStrength = 'derived';
+            ppl.reason = `${tot.value.toFixed(2)} € ÷ ${lit.value.toFixed(2)} L`;
+            // 'warn' = abgeleiteter Wert außerhalb Normalbereich → als 'uncertain' markieren
+            ppl.status = st === 'safe' ? 'derived' : 'uncertain';
+          }
+          // Falls 'outside': ppl bleibt leer — kein falscher Wert besser als ein unrealistischer
+        }
+        tot.status = tot.status || (tot.conf >= 0.80 ? 'safe' : 'uncertain');
+        lit.status = lit.status || (lit.conf >= 0.80 ? 'safe' : 'uncertain');
+      }
+
+      if (has(lit) && has(ppl) && !has(tot)) {
+        const pplOk = ppl.contextStrength === 'labeled' || ppl.contextStrength === 'label-nearby';
+        if (lit.conf >= 0.65 && ppl.conf >= 0.65 && pplOk) {
+          const derived = +(lit.value * ppl.value).toFixed(2);
+          if (_rangeStatus('totalCost', derived) !== 'outside') {
+            tot.value = derived; tot.source = 'derived'; tot.conf = 0.72;
+            tot.reason = `${lit.value.toFixed(2)} L × ${ppl.value.toFixed(4)} €/L`;
+            tot.status = 'derived';
+          }
+        }
+        lit.status = lit.status || (lit.conf >= 0.80 ? 'safe' : 'uncertain');
+        ppl.status = ppl.status || (ppl.conf >= 0.80 ? 'safe' : 'uncertain');
+      }
+    }
+
+    // ── Fehlende Status-Werte setzen ────────────────────────────
+    for (const [key, f] of [['totalCost', tot], ['liters', lit], ['pricePerLiter', ppl]]) {
+      if (!f.status) {
+        if (!f.value) f.status = 'missing';
+        else if (f.source === 'derived') f.status = 'derived';
+        else if (f.conf >= 0.82 && _rangeStatus(key, f.value) === 'safe') f.status = 'safe';
+        else f.status = 'uncertain';
+      }
+      if (!f.source) f.source = 'ocr';
+      if (f.plausibility == null) f.plausibility = 0;
+    }
+
+    // Datum
+    const d = result.date;
+    d.status = d.value ? (d.conf >= 0.70 ? 'safe' : 'uncertain') : 'missing';
+    if (!d.source) d.source = 'ocr';
+    if (d.plausibility == null) d.plausibility = 0;
+
+    // Sanity clamp: grob außerhalb → conf stark reduzieren
+    if (lit.value && (lit.value < 1 || lit.value > 200))  lit.conf = Math.min(lit.conf, 0.25);
+    if (tot.value && (tot.value < 2 || tot.value > 500))  tot.conf = Math.min(tot.conf, 0.25);
+    if (ppl.value && (ppl.value < 0.5 || ppl.value > 5.0)) ppl.conf = Math.min(ppl.conf, 0.20);
   }
 
   function _parseMoney(s) {
@@ -392,6 +580,29 @@ const OCR = (() => {
     if (m) return parseFloat(m[1] + '.' + m[2]) || null;
     const v = parseFloat(str.replace(',', '.'));
     return isNaN(v) ? null : v;
+  }
+
+  // Normalize common OCR errors for fuel prices (€/L).
+  // Returns { value, source: 'ocr'|'normalized' } or null.
+  function _normalizePPLRaw(s) {
+    if (!s) return null;
+    // Fix common OCR character swaps in digit positions
+    let str = String(s).trim().replace(/[Il]/g, '1').replace(/O/g, '0');
+    const direct = _parsePricePerLiter(str);
+    if (direct && direct >= 0.5 && direct <= 4.0) return { value: direct, source: 'ocr' };
+    // "1719" / "1649" → 1.719 / 1.649 (4-digit integer, no separator)
+    const m4 = str.match(/^([12])(\d{3})$/);
+    if (m4) {
+      const v = parseFloat(m4[1] + '.' + m4[2]);
+      if (v >= 0.5 && v <= 4.0) return { value: v, source: 'normalized' };
+    }
+    // "1,71" / "1.71" → 1.710 (2-decimal price, trailing zero assumed)
+    const m2 = str.match(/^(\d{1,2})[,.](\d{2})$/);
+    if (m2) {
+      const v = parseFloat(m2[1] + '.' + m2[2] + '0');
+      if (v >= 0.5 && v <= 4.0) return { value: v, source: 'normalized' };
+    }
+    return null;
   }
 
   function _parseLiters(s) {
@@ -946,71 +1157,87 @@ const OCR = (() => {
       const sc = Math.min(1, targetW / _srcW);
       const cw = Math.max(1, Math.round(_srcW * sc));
       const ch = Math.max(1, Math.round(_srcH * sc));
+      const n  = cw * ch;
 
       const c = document.createElement('canvas');
       c.width = cw; c.height = ch;
       const ctx = c.getContext('2d', { willReadFrequently: true });
       ctx.drawImage(_srcBitmap, 0, 0, cw, ch);
-      const img = ctx.getImageData(0, 0, cw, ch);
-      const d = img.data;
+      const d = ctx.getImageData(0, 0, cw, ch).data;
 
-      // Helligkeits-Profil: Zeilen- und Spalten-Durchschnitt
-      const rowBright = new Float32Array(ch);
-      const colBright = new Float32Array(cw);
+      // ── Graustufen ──────────────────────────────────────────────
+      const gray = new Uint8Array(n);
+      for (let i = 0; i < n; i++)
+        gray[i] = Math.round(0.2126*d[i*4] + 0.7152*d[i*4+1] + 0.0722*d[i*4+2]);
 
-      for (let y = 0; y < ch; y++) {
-        let sum = 0;
-        for (let x = 0; x < cw; x++) {
-          const i = (y*cw + x)*4;
-          sum += 0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2];
-        }
-        rowBright[y] = sum / cw;
+      // ── Otsu-Schwellwert (automatisch, besser als fixer 155) ────
+      const hist = new Int32Array(256);
+      for (let i = 0; i < n; i++) hist[gray[i]]++;
+      let sumAll = 0;
+      for (let v = 0; v < 256; v++) sumAll += v * hist[v];
+      let wB = 0, sumB = 0, maxVar = 0, otsuT = 128;
+      for (let t = 0; t < 256; t++) {
+        wB += hist[t];
+        if (!wB) continue;
+        const wF = n - wB;
+        if (!wF) break;
+        sumB += t * hist[t];
+        const mB = sumB / wB, mF = (sumAll - sumB) / wF;
+        const v = wB * wF * (mB - mF) ** 2;
+        if (v > maxVar) { maxVar = v; otsuT = t; }
       }
-      for (let x = 0; x < cw; x++) {
-        let sum = 0;
-        for (let y = 0; y < ch; y++) {
-          const i = (y*cw + x)*4;
-          sum += 0.2126*d[i] + 0.7152*d[i+1] + 0.0722*d[i+2];
-        }
-        colBright[x] = sum / ch;
-      }
 
-      // Beleg-Bereich: zusammenhängende Zone mit hoher Helligkeit (> 160)
-      // Suche größtes zusammenhängendes Intervall
-      const brightThr = 155;
-
-      const findInterval = (arr, thr) => {
-        // Finde das längste zusammenhängende Intervall über dem Schwellwert
-        let bestStart = 0, bestLen = 0, cur = -1, curLen = 0;
-        for (let i = 0; i < arr.length; i++) {
-          if (arr[i] >= thr) {
-            if (cur < 0) cur = i;
-            curLen++;
-            if (curLen > bestLen) { bestLen = curLen; bestStart = cur; }
-          } else {
-            cur = -1; curLen = 0;
+      // ── Begrenzungsrahmen aller hellen (Beleg-)Pixel ────────────
+      // Ignoriere äußersten 3%-Rand um Überbelichtungsartefakte zu vermeiden
+      const marginX = Math.round(cw * 0.03), marginY = Math.round(ch * 0.03);
+      let rMin = ch, rMax = 0, cMin = cw, cMax = 0, brightCount = 0;
+      for (let y = marginY; y < ch - marginY; y++) {
+        for (let x = marginX; x < cw - marginX; x++) {
+          if (gray[y * cw + x] >= otsuT) {
+            if (y < rMin) rMin = y; if (y > rMax) rMax = y;
+            if (x < cMin) cMin = x; if (x > cMax) cMax = x;
+            brightCount++;
           }
         }
-        return bestLen > 10
-          ? { start: bestStart, end: bestStart + bestLen - 1 }
-          : { start: 0, end: arr.length - 1 }; // fallback: ganzes Bild
-      };
+      }
 
-      const rows = findInterval(rowBright, brightThr);
-      const cols = findInterval(colBright, brightThr);
+      // Fallback auf Gesamtbild wenn keine helle Region gefunden
+      if (rMax <= rMin || cMax <= cMin || brightCount < n * 0.05) {
+        rMin = marginY; rMax = ch - marginY;
+        cMin = marginX; cMax = cw - marginX;
+      }
 
-      // Padding
-      const padX = Math.round(cw * 0.02);
-      const padY = Math.round(ch * 0.02);
-      const x0 = Math.max(0, cols.start - padX) / sc;
-      const x1 = Math.min(cw-1, cols.end   + padX) / sc;
-      const y0 = Math.max(0, rows.start - padY) / sc;
-      const y1 = Math.min(ch-1, rows.end   + padY) / sc;
+      // ── Konfidenzbewertung ───────────────────────────────────────
+      // Gut wenn: Region klar kleiner als Bild und Seitenverhältnis beleg-typisch
+      const regionW = cMax - cMin, regionH = rMax - rMin;
+      const coverage = (regionW * regionH) / ((cw - 2*marginX) * (ch - 2*marginY));
+      const aspect   = regionH > 0 ? regionW / regionH : 1;
+      // Kassenbon: typischerweise hochformatig (aspect 0.25–0.90)
+      const aspectOk   = aspect >= 0.20 && aspect <= 1.2;
+      const coverageOk = coverage > 0.10 && coverage < 0.95;
+      const confidence = (aspectOk ? 0.5 : 0.2) + (coverageOk ? 0.5 : 0.2);
+      console.log(`Auto-Ecken: Otsu=${otsuT}, coverage=${(coverage*100).toFixed(0)}%, aspect=${aspect.toFixed(2)}, conf=${confidence.toFixed(2)}`);
+
+      // Leichtes Padding um die erkannte Region
+      const padX = Math.round(cw * 0.015), padY = Math.round(ch * 0.015);
+      const x0 = Math.max(0, cMin - padX) / sc;
+      const x1 = Math.min(cw-1, cMax + padX) / sc;
+      const y0 = Math.max(0, rMin - padY) / sc;
+      const y1 = Math.min(ch-1, rMax + padY) / sc;
 
       _cropPts = _orderTLTRBRBL([
         { x: x0, y: y0 }, { x: x1, y: y0 },
         { x: x1, y: y1 }, { x: x0, y: y1 },
       ]);
+
+      // Konfidenz im Info-Text anzeigen
+      const infoEl = _ui.wrap?.querySelector('div[style*="font-mono"]');
+      if (infoEl) {
+        const label = confidence >= 0.8 ? '✓ Auto-Ecken gut'
+                    : confidence >= 0.5 ? '~ Auto-Ecken OK — bitte prüfen'
+                    :                     '⚠ Auto-Ecken unsicher — bitte manuell anpassen';
+        infoEl.textContent = `${label} • ↻ Drehen wenn seitlich • Scannen`;
+      }
     } catch (e) {
       console.warn('Auto-corner guess failed:', e);
     }
@@ -1144,17 +1371,15 @@ const OCR = (() => {
     _setProgress(10, 'Beleg wird begradigt…');
 
     const warped = _warpPerspectiveToCanvas(_srcBitmap, _cropPts);
+    _lastWarped = warped; // für Tap-Workflow speichern
 
-    // Warp-Vorschau anzeigen, User entscheidet
     _showWarpPreview(
       warped,
-      // onConfirm → OCR auf dem begradigten Bild
       async () => {
         _hideWarpPreview();
         _setProgress(15, 'Starte Texterkennung…');
         await _runOCR(warped);
       },
-      // onBack → zurück zur Ecken-Auswahl
       () => {
         _hideWarpPreview();
         _enableCropUI();
@@ -1166,6 +1391,7 @@ const OCR = (() => {
 
   async function scanOriginal() {
     if (!_srcBitmap) return;
+    _lastWarped = null; // kein begradigtes Bild beim Direktscan
     _setProgress(10, 'Scanne ohne Ausrichten…');
     await _runOCR(_srcBitmap);
   }
@@ -1210,7 +1436,7 @@ const OCR = (() => {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // Ergebnis-Anzeige
+  // Ergebnis-Anzeige — v7: Status-Badges, Alternativen, Tap-Buttons
   // ─────────────────────────────────────────────────────────────
 
   function showResult(parsed) {
@@ -1225,31 +1451,355 @@ const OCR = (() => {
     ];
 
     for (const f of fields) {
-      const el = document.getElementById(f.id);
-      const hint = document.getElementById(f.id + '-hint');
+      const el    = document.getElementById(f.id);
+      const hint  = document.getElementById(f.id + '-hint');
       if (!el) continue;
       const d = parsed?.[f.key];
       el.value = (d && d.value != null) ? f.fmt(d.value) : '';
 
-      // Hint: Konfidenz-Anzeige
-      if (hint) {
-        if (!d || d.value == null) {
-          hint.textContent = '✗ Nicht erkannt';
-          hint.style.color = 'var(--red, #e55)';
-          hint.style.display = 'block';
-        } else if (d.conf < 0.70) {
-          hint.textContent = `⚠ Unsicher (${d.raw || ''})`;
-          hint.style.color = 'var(--amber)';
-          hint.style.display = 'block';
-        } else if (d.raw === 'berechnet') {
-          hint.textContent = '≈ Aus Total ÷ Preis berechnet';
-          hint.style.color = 'var(--t3)';
-          hint.style.display = 'block';
-        } else {
-          hint.style.display = 'none';
+      if (!hint) continue;
+      hint.style.display = 'block';
+
+      const status = d?.status || (d?.value == null ? 'missing' : 'uncertain');
+
+      // ── Statusfarbe ─────────────────────────────────────────────
+      const colors = {
+        safe:        'var(--t3)',
+        derived:     'var(--t3)',
+        uncertain:   'var(--amber)',
+        conflicting: 'var(--red, #e55)',
+        missing:     'var(--red, #e55)',
+      };
+      hint.style.color = colors[status] || 'var(--amber)';
+
+      // ── Statustext ──────────────────────────────────────────────
+      let msg = '';
+      if (status === 'missing') {
+        msg = '✗ Nicht erkannt';
+      } else if (status === 'safe') {
+        const ctx = d.contextStrength === 'labeled' ? ' (EUR/L-Label)' : '';
+        msg = `✓ Erkannt${ctx}`;
+      } else if (status === 'derived') {
+        msg = `≈ Errechnet`;
+        if (d.reason) msg += ` — ${d.reason}`;
+        else if (f.key === 'liters')        msg += ` aus Betrag ÷ €/L`;
+        else if (f.key === 'totalCost')     msg += ` aus L × €/L`;
+        else if (f.key === 'pricePerLiter') msg += ` aus Betrag ÷ L`;
+      } else if (status === 'conflicting') {
+        msg = `⚠⚠ Widersprüchlich — bitte manuell prüfen`;
+      } else {
+        // uncertain
+        if (d.source === 'normalized') msg = `🔧 Korrigiert (${d.raw || ''}) — bitte prüfen`;
+        else if (d.source === 'derived') msg = `≈ Errechnet (Bereich ungewöhnlich!) — bitte prüfen`;
+        else {
+          const ctx = d.contextStrength === 'isolated' ? ' (kein Label)' : '';
+          msg = `⚠ Unsicher${ctx} — bitte prüfen`;
         }
       }
+
+      // Warn-Bereich-Hinweis für ppl
+      if (f.key === 'pricePerLiter' && d?.value != null) {
+        const rs = _rangeStatus('pricePerLiter', d.value);
+        if (rs === 'warn') msg += ' | Außerhalb Normalbereich!';
+        else if (rs === 'outside') msg += ' | UNREALISTISCH!';
+      }
+
+      hint.innerHTML = msg;
+
+      // ── Alternativen anzeigen (nur bei ppl) ─────────────────────
+      if (f.key === 'pricePerLiter' && d?._alts?.length) {
+        const altDiv = document.createElement('div');
+        altDiv.style.cssText = 'margin-top:3px;display:flex;gap:6px;flex-wrap:wrap';
+        for (const alt of d._alts) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.style.cssText = 'font-size:10px;padding:2px 6px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--t2);cursor:pointer';
+          btn.textContent = alt.value.toFixed(4);
+          btn.title = `Alternative: ${alt.value.toFixed(4)} €/L (${alt.contextStrength || ''})`;
+          btn.onclick = () => { el.value = alt.value.toFixed(4); altDiv.remove(); };
+          altDiv.appendChild(btn);
+        }
+        const altLabel = document.createElement('span');
+        altLabel.style.cssText = 'font-size:10px;color:var(--t3);align-self:center';
+        altLabel.textContent = 'Alternativen:';
+        altDiv.prepend(altLabel);
+        hint.after(altDiv);
+      }
     }
+
+    // ── Tap-Workflow einblenden wenn Bild vorhanden ──────────────
+    _ensureTapSection(parsed);
+  }
+
+  // ─────────────────────────────────────────────────────────────
+  // Tap-Workflow: Nutzer tippt direkt auf Belegbild
+  // ─────────────────────────────────────────────────────────────
+
+  function _ensureTapSection(parsed) {
+    // Nur anzeigen wenn ein Bild vorhanden
+    const imgSrc = _lastWarped || (_srcBitmap ? _bitmapToCanvas(_srcBitmap) : null);
+    if (!imgSrc) return;
+
+    const host = document.getElementById('ocr-result-section');
+    if (!host) return;
+
+    // Bestehende Tap-Sektion entfernen (falls vorhanden)
+    const existing = document.getElementById('ocr-tap-section');
+    if (existing) existing.remove();
+
+    // Prüfe ob Tap-Angebot sinnvoll: mind. 1 Feld unsicher/fehlend/widersprüchlich
+    const needsTap = ['liters', 'totalCost', 'pricePerLiter'].some(k => {
+      const st = parsed?.[k]?.status;
+      return !st || st === 'missing' || st === 'uncertain' || st === 'conflicting';
+    });
+    if (!needsTap) return;
+
+    const tapSec = document.createElement('div');
+    tapSec.id = 'ocr-tap-section';
+    tapSec.style.cssText = 'margin-top:12px;padding:10px;background:var(--bg2);border:1px solid var(--border);border-radius:10px';
+
+    const tapHead = document.createElement('div');
+    tapHead.style.cssText = 'font-family:var(--font-mono);font-size:11px;letter-spacing:1px;color:var(--amber);text-transform:uppercase;margin-bottom:8px';
+    tapHead.textContent = 'Wert auf Beleg einrahmen';
+    tapSec.appendChild(tapHead);
+
+    const tapInfo = document.createElement('div');
+    tapInfo.style.cssText = 'font-size:12px;color:var(--t3);margin-bottom:8px';
+    tapInfo.textContent = 'Feld wählen, dann Kasten um die Zahl ziehen:';
+    tapSec.appendChild(tapInfo);
+
+    // Buttons: welches Feld soll getappt werden?
+    const tapFields = [
+      { key: 'totalCost',     label: 'Betrag €',  id: 'ocr-r-total'  },
+      { key: 'liters',        label: 'Liter',     id: 'ocr-r-liters' },
+      { key: 'pricePerLiter', label: '€/L',       id: 'ocr-r-ppl'    },
+      { key: 'odometer',      label: 'km-Stand',  id: null            },
+    ];
+
+    const btnRow = document.createElement('div');
+    btnRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px';
+    for (const tf of tapFields) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-secondary';
+      btn.style.cssText = 'font-size:12px;padding:5px 10px;flex:1;min-width:70px';
+      btn.textContent = tf.label;
+      btn.dataset.tapKey = tf.key;
+      btn.onclick = () => _activateTapMode(tf.key, tf.id, imgSrc, tapSec, btnRow);
+      btnRow.appendChild(btn);
+    }
+    tapSec.appendChild(btnRow);
+
+    // Canvas für Tap
+    const tapCanvasWrap = document.createElement('div');
+    tapCanvasWrap.id = 'ocr-tap-canvas-wrap';
+    tapCanvasWrap.style.cssText = 'display:none;position:relative;margin-top:6px';
+    tapSec.appendChild(tapCanvasWrap);
+
+    host.appendChild(tapSec);
+  }
+
+  // Hilfsfunktion: ImageBitmap → Canvas
+  function _bitmapToCanvas(bmp) {
+    const c = document.createElement('canvas');
+    c.width = bmp.width; c.height = bmp.height;
+    c.getContext('2d').drawImage(bmp, 0, 0);
+    return c;
+  }
+
+  function _activateTapMode(fieldKey, fieldId, imgCanvas, tapSec, btnRow) {
+    _tapTarget = fieldKey;
+
+    btnRow.querySelectorAll('button').forEach(b => {
+      b.style.background = b.dataset.tapKey === fieldKey ? 'var(--amber)' : '';
+      b.style.color      = b.dataset.tapKey === fieldKey ? '#000' : '';
+    });
+
+    const wrap = document.getElementById('ocr-tap-canvas-wrap');
+    if (!wrap) return;
+    wrap.style.display = 'block';
+    wrap.innerHTML = '';
+
+    const info = document.createElement('div');
+    info.style.cssText = 'font-size:11px;color:var(--amber);margin-bottom:4px';
+    info.id = 'ocr-tap-info';
+    info.textContent = `Kasten um "${_tapFieldLabel(fieldKey)}" ziehen:`;
+    wrap.appendChild(info);
+
+    // Canvas skaliert auf max 320px Höhe
+    const maxH = 320;
+    const aspect = imgCanvas.width / imgCanvas.height;
+    const dispH = Math.min(maxH, imgCanvas.height);
+    const dispW = Math.round(dispH * aspect);
+
+    const tc = document.createElement('canvas');
+    tc.id = 'ocr-tap-canvas';
+    tc.width  = imgCanvas.width;
+    tc.height = imgCanvas.height;
+    tc.style.cssText = `display:block;width:${dispW}px;height:${dispH}px;max-width:100%;border-radius:8px;border:2px solid var(--amber);cursor:crosshair;touch-action:none;user-select:none`;
+    const tctx = tc.getContext('2d');
+    tctx.drawImage(imgCanvas, 0, 0);
+    wrap.appendChild(tc);
+
+    // Skalierungsfaktoren: CSS-px → Quell-Pixel
+    const getScale = () => {
+      const r = tc.getBoundingClientRect();
+      return { sx: imgCanvas.width / r.width, sy: imgCanvas.height / r.height };
+    };
+    const toSrc = (cx, cy) => {
+      const { sx, sy } = getScale();
+      return { x: Math.round(cx * sx), y: Math.round(cy * sy) };
+    };
+
+    let dragStart = null; // in Quell-Pixel
+
+    const drawBox = (a, b) => {
+      tctx.clearRect(0, 0, tc.width, tc.height);
+      tctx.drawImage(imgCanvas, 0, 0);
+      if (!a || !b) return;
+      const rx = Math.min(a.x, b.x), ry = Math.min(a.y, b.y);
+      const rw = Math.abs(b.x - a.x),   rh = Math.abs(b.y - a.y);
+      if (rw < 2 || rh < 2) return;
+      tctx.save();
+      tctx.fillStyle = 'rgba(255,191,0,0.15)';
+      tctx.strokeStyle = 'rgba(255,191,0,0.95)';
+      tctx.lineWidth = Math.max(2, tc.width / 400);
+      tctx.beginPath(); tctx.rect(rx, ry, rw, rh); tctx.fill(); tctx.stroke();
+      tctx.restore();
+    };
+
+    const getCanvasXY = ev => {
+      const r = tc.getBoundingClientRect();
+      return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+    };
+
+    tc.addEventListener('pointerdown', ev => {
+      ev.preventDefault();
+      tc.setPointerCapture?.(ev.pointerId);
+      const { x, y } = getCanvasXY(ev);
+      dragStart = toSrc(x, y);
+      drawBox(dragStart, dragStart);
+    }, { passive: false });
+
+    tc.addEventListener('pointermove', ev => {
+      if (!dragStart) return;
+      ev.preventDefault();
+      const { x, y } = getCanvasXY(ev);
+      drawBox(dragStart, toSrc(x, y));
+    }, { passive: false });
+
+    tc.addEventListener('pointerup', async ev => {
+      if (!dragStart) return;
+      ev.preventDefault();
+      const { x, y } = getCanvasXY(ev);
+      const dragEnd = toSrc(x, y);
+      drawBox(dragStart, dragEnd);
+
+      const rx = Math.min(dragStart.x, dragEnd.x);
+      const ry = Math.min(dragStart.y, dragEnd.y);
+      const rw = Math.abs(dragEnd.x - dragStart.x);
+      const rh = Math.abs(dragEnd.y - dragStart.y);
+      dragStart = null;
+
+      if (rw < 15 || rh < 8) {
+        document.getElementById('ocr-tap-info').textContent = '⚠ Kasten zu klein — nochmal ziehen';
+        return;
+      }
+
+      document.getElementById('ocr-tap-info').textContent = 'Lese markierten Bereich…';
+      try {
+        const extracted = await _ocrRegionRect(imgCanvas, rx, ry, rw, rh, fieldKey);
+        if (extracted != null) {
+          const targetEl = fieldId ? document.getElementById(fieldId) : null;
+          if (targetEl) {
+            targetEl.value = String(extracted);
+            const hint = document.getElementById(fieldId + '-hint');
+            if (hint) { hint.textContent = '✓ Manuell aus Foto'; hint.style.color = 'var(--t3)'; }
+          } else if (fieldKey === 'odometer') {
+            _setVal('tf-odometer', String(Math.round(extracted)));
+            if (window.App?.updateFuelPreview) App.updateFuelPreview();
+          }
+          document.getElementById('ocr-tap-info').textContent = `✓ ${_tapFieldLabel(fieldKey)}: ${extracted}`;
+        } else {
+          document.getElementById('ocr-tap-info').textContent = '⚠ Keine Zahl erkannt — anderen Bereich markieren';
+        }
+      } catch(e) {
+        document.getElementById('ocr-tap-info').textContent = '✗ Fehler — nochmal versuchen';
+      }
+    }, { passive: false });
+
+    tc.addEventListener('pointercancel', () => { dragStart = null; });
+  }
+
+  function _tapFieldLabel(key) {
+    return { totalCost: 'Betrag €', liters: 'Liter', pricePerLiter: '€/L', odometer: 'km-Stand' }[key] || key;
+  }
+
+  // OCR eines vom Nutzer gezogenen Rechtecks (direkte Quell-Koordinaten)
+  async function _ocrRegionRect(srcCanvas, rx, ry, rw, rh, fieldKey) {
+    // Leichten Puffer für bessere OCR (5% horizontal, 15% vertikal)
+    const padX = Math.round(rw * 0.05);
+    const padY = Math.round(rh * 0.15);
+    const x = Math.max(0, rx - padX);
+    const y = Math.max(0, ry - padY);
+    const w = Math.min(srcCanvas.width  - x, rw + padX * 2);
+    const h = Math.min(srcCanvas.height - y, rh + padY * 2);
+    if (w < 10 || h < 5) return null;
+
+    // Region in neues Canvas kopieren
+    const rc = document.createElement('canvas');
+    rc.width = w; rc.height = h;
+    rc.getContext('2d').drawImage(srcCanvas, x, y, w, h, 0, 0, w, h);
+
+    // Hochskalieren für Tesseract (min 400px Breite für gute Erkennung kleiner Zahlen)
+    const minW = 400;
+    const upsc = w < minW ? minW / w : 1;
+    const uc = document.createElement('canvas');
+    uc.width  = Math.round(w * upsc);
+    uc.height = Math.round(h * upsc);
+    uc.getContext('2d').drawImage(rc, 0, 0, uc.width, uc.height);
+
+    const processed = _preprocessForOCR(uc);
+    const text = await recognize(processed);
+    return _extractNumberForField(text, fieldKey);
+  }
+
+  // Extrahiert die relevante Zahl aus einem kurzen OCR-Text
+  function _extractNumberForField(text, fieldKey) {
+    const flat = _normalizeOCRText(text);
+
+    if (fieldKey === 'odometer') {
+      // km: große Ganzzahl
+      const km = [...flat.matchAll(/\b(\d{4,6})\b/g)].map(m => parseInt(m[1], 10)).filter(v => v >= 1000 && v <= 999999);
+      return km.length ? km.reduce((a, b) => Math.abs(a - 80000) < Math.abs(b - 80000) ? a : b) : null;
+    }
+
+    if (fieldKey === 'pricePerLiter') {
+      // ppl: 3-4 Dezimalstellen
+      for (const m of flat.matchAll(/([0-9]{1,2}[,\.][0-9]{3,4})/g)) {
+        const v = _parsePricePerLiter(m[1]);
+        if (v && v > 0.8 && v < 4.0) return +v.toFixed(4);
+      }
+      return null;
+    }
+
+    if (fieldKey === 'liters') {
+      for (const m of flat.matchAll(/([0-9]{1,3}[,\.][0-9]{2,3})/g)) {
+        const v = _parseLiters(m[1]);
+        if (v && v >= 2 && v <= 200) return +v.toFixed(2);
+      }
+      return null;
+    }
+
+    if (fieldKey === 'totalCost') {
+      for (const m of flat.matchAll(/([0-9]{1,4}[,\.][0-9]{2})/g)) {
+        const v = _parseMoney(m[1]);
+        if (v && v >= 2 && v <= 1000) return +v.toFixed(2);
+      }
+      return null;
+    }
+
+    return null;
   }
 
   // ─────────────────────────────────────────────────────────────
