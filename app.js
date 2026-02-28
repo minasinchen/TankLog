@@ -1106,6 +1106,18 @@ const App = (() => {
     toast('ICS heruntergeladen', 'success');
   }
 
+  async function downloadAllICS() {
+    const all = await DB.getAllMaintenances();
+    const withDue = all.filter(m => m.dueDate);
+    if (!withDue.length) { toast('Keine Termine mit Fälligkeitsdatum vorhanden', 'error'); return; }
+    const vehicleMap = Object.fromEntries(_vehicles.map(v => [v._id, v.name]));
+    const ics = Calc.generateICSAll(withDue, vehicleMap);
+    if (!ics) { toast('Keine exportierbaren Termine gefunden', 'error'); return; }
+    const today = new Date().toISOString().slice(0, 10);
+    _downloadBlob(ics, 'text/calendar;charset=utf-8', `tanklog_termine_${today}.ics`);
+    toast(`${withDue.length} Termin(e) als ICS exportiert`, 'success');
+  }
+
   // ── COSTS ────────────────────────────────────────────────────
 
   function openCostForm(id = null) {
@@ -1375,7 +1387,7 @@ const App = (() => {
     openGarage, openVehicleForm, saveVehicle, deleteVehicle, selectAndEdit,
     openFuelEdit, saveFuelEdit, deleteFuelEntry,
     updateFuelPreview, saveFuelEntry,
-    openMaintForm, saveMaint, deleteMaint, downloadMaintICS,
+    openMaintForm, saveMaint, deleteMaint, downloadMaintICS, downloadAllICS,
     openCostForm, saveCost, deleteCost,
     renderAnalyse, setAnalysePeriod,
     switchListTab, addFromList,

@@ -238,6 +238,7 @@
           </div>
           <div class="btn-row" style="flex-direction:column;gap:8px">
             <button class="btn btn-secondary btn-full" onclick="App.exportJSON()">📦 Vollständiges Backup exportieren</button>
+            <button class="btn btn-secondary btn-full" onclick="App.downloadAllICS()">📅 Alle Termine als ICS exportieren</button>
             <label class="btn btn-secondary btn-full" style="cursor:pointer;justify-content:center">
               📥 Backup importieren (JSON)
               <input type="file" accept=".json" style="display:none" onchange="App.importJSON(this)">
