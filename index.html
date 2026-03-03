@@ -658,24 +658,24 @@
         <div class="form-row-2">
           <div class="form-group">
             <label>Datum</label>
-            <input type="date" id="ocr-r-date" class="ocr-field">
+            <input type="date" id="ocr-r-date" class="ocr-field" onchange="OCR.recalculateFromInputs()">
             <div class="ocr-hint" id="ocr-r-date-hint">⚠ Unsicher — bitte prüfen</div>
           </div>
           <div class="form-group">
             <label>Liter</label>
-            <input type="number" id="ocr-r-liters" step="0.01" class="ocr-field" inputmode="decimal">
+            <input type="number" id="ocr-r-liters" step="0.01" class="ocr-field" inputmode="decimal" oninput="OCR.recalculateFromInputs()">
             <div class="ocr-hint" id="ocr-r-liters-hint">⚠ Unsicher — bitte prüfen</div>
           </div>
         </div>
         <div class="form-row-2">
           <div class="form-group">
             <label>Betrag €</label>
-            <input type="number" id="ocr-r-total" step="0.01" class="ocr-field" inputmode="decimal">
+            <input type="number" id="ocr-r-total" step="0.01" class="ocr-field" inputmode="decimal" oninput="OCR.recalculateFromInputs()">
             <div class="ocr-hint" id="ocr-r-total-hint">⚠ Unsicher — bitte prüfen</div>
           </div>
           <div class="form-group">
             <label>€/Liter (optional)</label>
-            <input type="number" id="ocr-r-ppl" step="0.001" class="ocr-field" inputmode="decimal">
+            <input type="number" id="ocr-r-ppl" step="0.001" class="ocr-field" inputmode="decimal" oninput="OCR.recalculateFromInputs()">
             <div class="ocr-hint" id="ocr-r-ppl-hint">⚠ Unsicher — bitte prüfen</div>
           </div>
         </div>

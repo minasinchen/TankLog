@@ -140,6 +140,289 @@ Ablauf:
 
 Die Erkennung markiert unsichere Felder sichtbar, damit sie vor dem Speichern kontrolliert werden koennen.
 
+#### OCR-Pipeline im Detail
+
+1. Bild laden
+2. Bild vorverarbeiten
+3. OCR-Text mit Tesseract.js erzeugen
+4. OCR-Text normalisieren
+5. Felder per Heuristik extrahieren
+6. Werte gegeneinander pruefen
+7. Fehlende Werte berechnen
+8. Ergebnis mit Status und Alternativen anzeigen
+9. Manuelle Korrekturen erneut gegenpruefen
+
+#### Bildverarbeitung
+
+Vor der Erkennung wird das Belegbild fuer mobile Browser optimiert:
+
+- Groessenbegrenzung auf eine handhabbare Aufloesung
+- Graustufen
+- Kontrastanhebung
+- leichte Schaerfung
+- optional perspektivische Entzerrung nach manuellem Zuschnitt
+- manuelle Rotation um 90 Grad bei seitlich fotografierten Belegen
+
+Der Zuschnitt kann ueber interaktive Eckpunkte angepasst werden. Danach wird ein entzerrtes Canvas erzeugt und darauf die OCR ausgefuehrt.
+
+#### Text-Normalisierung
+
+Vor dem eigentlichen Parsing wird OCR-Rohtext bereinigt:
+
+- Zeilenumbrueche und doppelte Leerzeichen werden vereinheitlicht
+- `EURO` wird zu `EUR`
+- getrennte Dezimalwerte wie `84 30 EUR` werden zu `84,30 EUR`
+- Preisangaben wie `1 439 EUR/l` werden zu `1.439 EUR/l`
+- das haeufige OCR-Problem `l` -> `1` wird heuristisch korrigiert, z. B. `50,00 1` -> `50,00 l`
+
+Diese Normalisierung ist entscheidend, weil die spaetere Erkennung stark auf typische Tankbeleg-Muster ausgelegt ist.
+
+#### Extrahierte Felder
+
+Das OCR versucht folgende Felder zu erkennen:
+
+- `date`
+- `liters`
+- `totalCost`
+- `pricePerLiter`
+
+Intern traegt jedes Feld zusaetzlich:
+
+- Rohwert (`raw`)
+- Confidence (`conf`)
+- Quelle (`source`)
+- Kontextstaerke (`contextStrength`)
+- Status (`safe`, `uncertain`, `derived`, `conflicting`, `missing`)
+- optionale Alternativen (`_alts`)
+
+#### Datumserkennung
+
+Die Datumserkennung sucht nach Formaten wie:
+
+- `dd.mm.yy`
+- `dd.mm.yyyy`
+- `dd/mm/yyyy`
+- `dd-mm-yyyy`
+
+Wichtig:
+
+- Es wird nicht mehr blind der erste Treffer genommen, sondern der erste plausible Treffer.
+- Jahre ausserhalb des Bereichs `1950` bis `aktuelles Jahr + 1` werden verworfen.
+- Offensichtliche Belegnummern wie `01/03/5891` sollen dadurch nicht als Datum durchgehen.
+
+#### Betragserkennung
+
+Die Erkennung des Gesamtbetrags arbeitet mehrstufig:
+
+1. Direkte Treffer ueber Schluesselwoerter:
+   - `Gesamtbetrag`
+   - `Bruttobetrag`
+   - `Summe`
+   - `Total`
+   - `zu zahlen`
+   - `Zahlbetrag`
+2. Suche im Umfeld solcher Schluesselwoerter
+3. Allgemeine Geld-Kandidaten mit Ranking
+
+Fuer allgemeine Kandidaten wird der Kontext bewertet:
+
+- positive Signale:
+  - `Gesamtbetrag`
+  - `Brutto`
+  - typische Produktzeilen
+- negative Signale:
+  - `gegeben in`
+  - `Rueckgeld`
+  - `bar`
+  - `cash`
+  - `Karte`
+  - `EC`
+  - `Visa`
+
+Dadurch soll ein Zahlungsbetrag wie `100,00 EUR gegeben` nicht als eigentlicher Rechnungsbetrag gewinnen.
+
+Wenn ein bereits erkannter Betrag spaeter nicht zu Liter und EUR/L passt, kann er erneut gerankt und ersetzt werden.
+
+#### EUR/L-Erkennung
+
+`pricePerLiter` wird bevorzugt ueber klare Label erkannt:
+
+- `1,439 EUR/l`
+- `1.439 EUR/l`
+- `EUR/l: 1,439`
+
+Zusatzlogik:
+
+- Zahl in der Naehe von `Preis/L`, `Literpreis`, `Kraftstoffpreis`
+- schwache Fallbacks fuer isolierte Zahlen
+- Normalisierung von `1719` -> `1.719`
+- Normalisierung von `1,71` -> `1.710`
+
+Schutzmechanismen:
+
+- Jahreszahlen wie `2014` sollen nicht als `2,014 EUR/L` fehlinterpretiert werden.
+- Historische oder ungewoehnlich niedrige Kraftstoffpreise werden trotzdem toleriert, z. B. LPG-Belege mit `0,729 EUR/L`.
+
+#### Liter-Erkennung
+
+Die Liter-Erkennung laeuft in mehreren Schritten:
+
+1. Direkte Einheit:
+   - `49,04 l`
+   - `47,39 L`
+2. OCR-Fallback fuer `l` als `1`:
+   - `50,00 1`
+3. Label-basierte Suche:
+   - `Menge`
+   - `Liter`
+   - `Volumen`
+   - `Kraftstoffmenge`
+   - `getankt`
+4. Suche im Kraftstoff-Kontext:
+   - `Diesel`
+   - `Super`
+   - `E10`
+   - `Benzin`
+5. Strukturparser fuer typische Produktzeilen
+6. Brute-Force-Fallback, wenn nur Betrag vorhanden ist
+
+Der Strukturparser versucht bei typischen Zeilen wie:
+
+```text
+*Zp 03 50,00 l 1,439 EUR/l
+```
+
+den kleineren plausiblen Grosswert als Liter und den groesseren als Betrag zu lesen.
+
+Beim Brute-Force-Fallback werden unplausible Kandidaten verworfen. Prozentwerte wie `17,00%` sollen dabei nicht als Liter interpretiert werden.
+
+#### Plausibilitaetsbereiche
+
+Die OCR arbeitet mit groben Bereichsgrenzen:
+
+- Liter:
+  - `safe`: `5..120`
+  - `warn`: `2..200`
+- Gesamtbetrag:
+  - `safe`: `5..300`
+  - `warn`: `2..500`
+- EUR/L:
+  - `safe`: ca. `0.600..2.500`
+  - `warn`: ca. `0.450..3.200`
+
+Diese Bereiche beeinflussen:
+
+- Statusanzeige
+- Ableitungen
+- Verwerfen unrealistischer Werte
+
+#### Konsistenzpruefung und Ableitung
+
+Die zentrale Logik liegt in `_validateFinalize(result)`.
+
+Dabei werden `totalCost`, `liters` und `pricePerLiter` gegeneinander gerechnet:
+
+- `Betrag ~= Liter * EUR/L`
+
+Wenn alle drei Felder vorhanden sind:
+
+- wird die Abweichung aller drei Kombinationen verglichen
+- der groesste Ausreisser wird als wahrscheinlich falscher Wert behandelt
+- dieser kann durch einen berechneten Wert ersetzt werden
+
+Wenn nur zwei von drei Feldern vorhanden sind:
+
+- aus `Betrag + EUR/L` wird `Liter`
+- aus `Betrag + Liter` wird `EUR/L`
+- aus `Liter + EUR/L` wird `Betrag`
+
+Ableitungen werden nicht blind uebernommen. Beruecksichtigt werden:
+
+- Confidence
+- Kontextstaerke
+- Plausibilitaetsbereich
+- ob ein Wert nur aus einem sehr schwachen OCR-Fallback stammt
+
+Der Status pro Feld ist danach:
+
+- `safe`
+- `uncertain`
+- `derived`
+- `conflicting`
+- `missing`
+
+#### Ergebnisanzeige
+
+Das OCR-Ergebnis wird in einer separaten Vorschau angezeigt:
+
+- Datum
+- Liter
+- Betrag
+- EUR/L
+
+Zu jedem Feld gibt es:
+
+- einen Statushinweis
+- farbliche Kennzeichnung
+- optional Alternativen als klickbare Vorschlaege
+
+Wenn mehrere plausible Kandidaten existieren, zeigt die UI kleine Buttons unter dem Feld. Ein Klick uebernimmt den Alternativwert.
+
+#### Manuelle Korrektur
+
+Die OCR-Vorschau ist editierbar. Aenderungen in folgenden Feldern loesen sofort eine neue Konsistenzrechnung aus:
+
+- Datum
+- Liter
+- Betrag
+- EUR/L
+
+Das bedeutet:
+
+- Wenn der Nutzer einen Wert aendert, werden die anderen Felder erneut geprueft.
+- Wenn danach zwei von drei Werten vorhanden sind, kann der dritte automatisch berechnet werden.
+
+Manuelle Werte werden intern als `source = manual` behandelt und mit hoher Confidence erneut in die Validierung gegeben.
+
+#### Markiermodus auf dem Beleg
+
+Unterhalb des OCR-Ergebnisses gibt es einen Bereich zum direkten Markieren eines Werts auf dem Belegbild.
+
+Unterstuetzte Felder:
+
+- Datum
+- Betrag
+- Liter
+- EUR/L
+- km-Stand
+
+Ablauf:
+
+1. Feld waehlen
+2. Rechteck um die relevante Zahl ziehen
+3. Nur dieser Bildausschnitt wird erneut ge-OCR-t
+4. Der erkannte Wert wird ins passende Feld geschrieben
+5. Danach wird sofort die gesamte OCR-Konsistenzlogik erneut ausgefuehrt
+
+So kann eine manuelle Markierung dazu fuehren, dass ein anderer fehlender Wert direkt automatisch korrekt berechnet wird.
+
+#### Typische Fehlerquellen
+
+Die OCR ist stark heuristisch und kann an folgenden Punkten scheitern:
+
+- `l` wird als `1` erkannt
+- `0` und `O` werden verwechselt
+- Zahlen stehen ohne klares Label
+- mehrere Geldwerte konkurrieren auf demselben Beleg
+- alte Belege haben ungewoehnliche Waehrungen oder Preisniveaus
+- abgeschnittene oder unscharfe Bildbereiche stoeren die Texterkennung
+
+In solchen Faellen sind besonders wichtig:
+
+- sauberer Zuschnitt
+- Markiermodus
+- manuelle Korrektur in der OCR-Vorschau
+
 ### Wartung
 
 Wartungseintraege enthalten:

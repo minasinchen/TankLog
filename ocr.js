@@ -106,7 +106,7 @@ const OCR = (() => {
   const _RANGES = {
     liters:        { safe: [5, 120],     warn: [2, 200]   },
     totalCost:     { safe: [5, 300],     warn: [2, 500]   },
-    pricePerLiter: { safe: [1.000, 2.200], warn: [0.900, 3.000] },
+    pricePerLiter: { safe: [0.600, 2.500], warn: [0.450, 3.200] },
   };
 
   // Gibt 'safe' | 'warn' | 'outside' zurück
@@ -144,12 +144,15 @@ const OCR = (() => {
       totalCost:     { value: null, raw: null, conf: 0, source: 'ocr', plausibility: 0 },
       pricePerLiter: { value: null, raw: null, conf: 0, source: 'ocr', plausibility: 0 },
     };
+    let totalFallbackCandidates = [];
 
     // ── DATE ────────────────────────────────────────────────────
-    const dm = flat.match(/\b(\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{2,4})\b/);
-    if (dm) {
+    for (const dm of flat.matchAll(/\b(\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{2,4})\b/g)) {
       const iso = _parseDate(dm[1]);
-      if (iso) result.date = { value: iso, raw: dm[1], conf: 0.70 };
+      if (iso) {
+        result.date = { value: iso, raw: dm[1], conf: 0.70 };
+        break;
+      }
     }
 
     // ── TOTAL COST ───────────────────────────────────────────────
@@ -188,17 +191,18 @@ const OCR = (() => {
     }
 
     // ── PRICE PER LITER ──────────────────────────────────────────
+    totalFallbackCandidates = _collectTotalFallbackCandidates(lines);
     const pplCandidates = [];
 
     // Stärkstes Signal: Zahl direkt vor EUR/l — z.B. "1,454 EUR/l", "1.719 EUR/1"
     for (const m of flat.matchAll(/([0-9]{1,2}[,\.][0-9]{3,4})\s*(?:€|eur|euro)?\s*\/\s*([lLiI1])\b/gi)) {
       const v = _parsePricePerLiter(m[1]);
-      if (v && v > 0.8 && v < 3.5) pplCandidates.push({ raw: m[1], value: v, conf: 0.88, contextStrength: 'labeled' });
+      if (v && v >= 0.45 && v < 4.0) pplCandidates.push({ raw: m[1], value: v, conf: 0.88, contextStrength: 'labeled' });
     }
     // Stärkstes Signal rückwärts: "EUR/l: 1,454" oder "EUR/l = 1.719"
     for (const m of flat.matchAll(/(?:€|eur|euro)\s*\/\s*([lLiI1])\s*[:=]?\s*([0-9]{1,2}[,\.][0-9]{3,4})/gi)) {
       const v = _parsePricePerLiter(m[2]);
-      if (v && v > 0.8 && v < 3.5) pplCandidates.push({ raw: m[2], value: v, conf: 0.82, contextStrength: 'labeled' });
+      if (v && v >= 0.45 && v < 4.0) pplCandidates.push({ raw: m[2], value: v, conf: 0.82, contextStrength: 'labeled' });
     }
     // Mittleres Signal: Zahl nahe Preis/L-Label (andere Zeile)
     for (let i = 0; i < lines.length; i++) {
@@ -207,7 +211,7 @@ const OCR = (() => {
         const m = look.match(/([0-9]{1,2}[,\.][0-9]{3,4})/);
         if (m) {
           const v = _parsePricePerLiter(m[1]);
-          if (v && v > 0.8 && v < 3.5) pplCandidates.push({ raw: m[1], value: v, conf: 0.75, contextStrength: 'label-nearby' });
+          if (v && v >= 0.45 && v < 4.0) pplCandidates.push({ raw: m[1], value: v, conf: 0.75, contextStrength: 'label-nearby' });
         }
       }
     }
@@ -240,6 +244,10 @@ const OCR = (() => {
     // Fallback: 4-Ziffern-Ganzzahl ("1719") oder 2-Dezimal-Wert ("1,71") — sehr schwach
     if (!result.pricePerLiter.value) {
       for (const m of flat.matchAll(/\b([12]\d{3}|[12][,\.]\d{2})\b/g)) {
+        if (/^\d{4}$/.test(m[1])) {
+          const yearish = parseInt(m[1], 10);
+          if (yearish >= 1900 && yearish <= 2099) continue;
+        }
         const norm = _normalizePPLRaw(m[1]);
         if (norm && norm.value >= 1.0 && norm.value <= 2.5) {
           result.pricePerLiter = { value: norm.value, raw: m[1], conf: 0.38, source: norm.source,
@@ -257,7 +265,7 @@ const OCR = (() => {
          .map(m => ({ raw: m[1], value: _parseLiters(m[1]) })),
       // Fallback: "49,04 1" – alleinstehende Ziffer 1 nach 2-Dezimal-Zahl (OCR-Fehler l→1)
       // (nach Normalisierung sollte das schon als "l" dastehen, aber doppelt hält besser)
-      ...[...flat.matchAll(/([0-9]{1,3}[,\.][0-9]{2})\s+1(?!\d)(?=\s+[0-9]{1,4}[,\.][0-9]{2})/g)]
+      ...[...flat.matchAll(/([0-9]{1,3}[,\.][0-9]{2})\s+1(?!\d)(?=\s+[0-9]{1,4}[,\.][0-9]{2,4})/g)]
          .map(m => ({ raw: m[1], value: _parseLiters(m[1]) })),
     ].filter(x => x.value && x.value > 1 && x.value < 250);
 
@@ -284,6 +292,11 @@ const OCR = (() => {
         best = plausible[0];
       }
       result.liters = { value: best.value, raw: best.raw, conf: 0.88, contextStrength: 'unit' };
+      const alts = plausible
+        .filter(x => Math.abs(x.value - best.value) > 0.0001 || x.raw !== best.raw)
+        .slice(0, 3)
+        .map(x => ({ value: x.value, raw: x.raw, label: 'Mit L-Einheit', contextStrength: 'unit' }));
+      if (alts.length) result.liters._alts = alts;
     }
 
     // 2) Label-Zeile: "Menge / Liter / Volumen / Kraftstoffmenge"
@@ -320,13 +333,19 @@ const OCR = (() => {
       for (let i = 0; i < lines.length; i++) {
         if (!fuelRE.test(lines[i])) continue;
         const candidates = [];
+        const major = [];
         const look = [lines[i], lines[i+1], lines[i+2]].filter(Boolean).join(' ');
         for (const m of look.matchAll(/\b([0-9]{1,3}[,\.][0-9]{2})\b/g)) {
           const v = _parseLiters(m[1]);
           if (v && v >= 3 && v <= 120) candidates.push({ raw: m[1], value: v });
+          if (v && v >= 5 && v <= 120) major.push({ raw: m[1], value: v });
         }
         if (candidates.length) {
-          const best = candidates.find(x => x.value >= 5) || candidates[0];
+          let best = candidates.find(x => x.value >= 5) || candidates[0];
+          if (major.length >= 2) {
+            major.sort((a, b) => a.value - b.value);
+            best = major[0];
+          }
           result.liters = { value: best.value, raw: best.raw, conf: 0.55, contextStrength: 'context' };
           break;
         }
@@ -338,13 +357,15 @@ const OCR = (() => {
       const productLineRE = /(super|diesel|e10|e5|benzin|fuelsave|ultimate|v-power|regular|kraftstoff)/i;
       for (let i = 0; i < lines.length; i++) {
         if (!productLineRE.test(lines[i])) continue;
-        const nums = [...lines[i].matchAll(/\b(\d{1,3}[,.]\d{2})\b/g)]
+        const nums = [...lines[i].matchAll(/\b(\d{1,3}[,.]\d{2,3})\b/g)]
           .map(m => _parseLiters(m[1]))
           .filter(v => v && v > 0);
+        const major = nums.filter(v => v >= 5);
         if (nums.length >= 2) {
-          nums.sort((a,b) => a-b);
-          const litVal  = nums[0];
-          const costVal = nums[nums.length-1];
+          const pool = major.length >= 2 ? major : nums;
+          pool.sort((a,b) => a-b);
+          const litVal  = pool[0];
+          const costVal = pool[pool.length-1];
           if (litVal >= 5 && litVal <= 120 && costVal > litVal) {
             result.liters = { value: litVal, raw: String(litVal), conf: 0.75, contextStrength: 'structure' };
             if (!result.totalCost.value && costVal > 5 && costVal < 500)
@@ -371,7 +392,7 @@ const OCR = (() => {
     // 6) ── BRUTE-FORCE FALLBACK: Liter aus Gesamtbetrag + allen Zahlen im Text ─
     // Markiert bewusst als 'brute-force' — darf NICHT als Basis für ppl-Ableitung dienen
     if (!result.liters.value && result.totalCost.value) {
-      const allNums = [...flat.matchAll(/\b(\d{1,3}[,.]\d{2})\b/g)]
+      const allNums = [...flat.matchAll(/\b(\d{1,3}[,.]\d{2})(?!\s*%)/g)]
         .map(m => _parseLiters(m[1]))
         .filter(v => v && v >= 5 && v <= 120 && Math.abs(v - result.totalCost.value) > 0.5);
       // Bevorzuge Werte im typischen Bereich 15–80L; nimm nicht den ersten blinden Treffer
@@ -387,11 +408,55 @@ const OCR = (() => {
       if (scoredBF.length) {
         const best = scoredBF[0];
         result.liters = { value: best.v, raw: String(best.v), conf: 0.55, contextStrength: 'brute-force' };
+        if (scoredBF.length > 1) {
+          result.liters._alts = scoredBF.slice(1, 4).map(x => ({
+            value: x.v,
+            raw: String(x.v),
+            label: 'Rechnerisch passend',
+            contextStrength: 'brute-force',
+          }));
+        }
         console.log('OCR: Liter per Brute-Force (schwach):', best.v, '→', best.ppl.toFixed(3), '€/L');
       }
     }
 
     // ── STRIKTE KONSISTENZPRÜFUNG & ABLEITUNG ────────────────────
+    const shouldRerankTotal =
+      totalFallbackCandidates.length && (
+        result.totalCost.conf <= 0.60 ||
+        (
+          result.totalCost.value &&
+          result.liters.value &&
+          result.pricePerLiter.value &&
+          Math.abs(result.totalCost.value - (result.liters.value * result.pricePerLiter.value)) / Math.max(1, result.totalCost.value) > 0.05
+        )
+      );
+    if (shouldRerankTotal) {
+      const rankedTotals = _rankTotalFallbackCandidates(
+        totalFallbackCandidates,
+        result.liters.value,
+        result.pricePerLiter.value
+      );
+      if (rankedTotals.length) {
+        const best = rankedTotals[0];
+        result.totalCost = {
+          ...result.totalCost,
+          value: best.value,
+          raw: best.raw,
+          conf: best.conf,
+          source: 'ocr',
+          contextStrength: best.contextStrength,
+        };
+        const alts = rankedTotals.slice(1, 4).map(c => ({
+          value: c.value,
+          raw: c.raw,
+          label: c.label,
+          contextStrength: c.contextStrength,
+        }));
+        if (alts.length) result.totalCost._alts = alts;
+        else delete result.totalCost._alts;
+      }
+    }
     _validateFinalize(result);
 
     return result;
@@ -484,13 +549,14 @@ const OCR = (() => {
       if (has(tot) && has(ppl) && !has(lit)) {
         // ppl muss zumindest 'label-nearby' sein, damit Liter sinnvoll abgeleitet wird
         const pplOk = ppl.contextStrength === 'labeled' || ppl.contextStrength === 'label-nearby';
-        if (tot.conf >= 0.65 && ppl.conf >= 0.65 && pplOk) {
+        const allowWeakPpl = !pplOk && tot.conf >= 0.80 && ppl.conf >= 0.35;
+        if (tot.conf >= 0.65 && ((pplOk && ppl.conf >= 0.65) || allowWeakPpl)) {
           const derived = +(tot.value / ppl.value).toFixed(2);
           if (_rangeStatus('liters', derived) !== 'outside') {
-            lit.value = derived; lit.source = 'derived'; lit.conf = 0.72;
+            lit.value = derived; lit.source = 'derived'; lit.conf = allowWeakPpl ? 0.62 : 0.72;
             lit.contextStrength = 'derived';
             lit.reason = `${tot.value.toFixed(2)} € ÷ ${ppl.value.toFixed(4)} €/L`;
-            lit.status = _rangeStatus('liters', derived) === 'safe' ? 'derived' : 'uncertain';
+            lit.status = (allowWeakPpl || _rangeStatus('liters', derived) !== 'safe') ? 'uncertain' : 'derived';
           }
         }
         tot.status = tot.status || (tot.conf >= 0.80 ? 'safe' : 'uncertain');
@@ -553,6 +619,90 @@ const OCR = (() => {
     if (lit.value && (lit.value < 1 || lit.value > 200))  lit.conf = Math.min(lit.conf, 0.25);
     if (tot.value && (tot.value < 2 || tot.value > 500))  tot.conf = Math.min(tot.conf, 0.25);
     if (ppl.value && (ppl.value < 0.5 || ppl.value > 5.0)) ppl.conf = Math.min(ppl.conf, 0.20);
+  }
+
+  function _collectTotalFallbackCandidates(lines) {
+    const totalLabelRE = /(gesamt(?:betrag)?|bruttobetrag|endbetrag|summe|total|zu\s+zahlen|zahlbetrag)\b/i;
+    const paymentRE = /(gegeben(?:\s+in)?|r\S*ckgeld|bar\b|cash\b|karte\b|ec\b|visa\b|mastercard\b|change\b)/i;
+    const taxRE = /(mwst|ust|steuer|netto)\b/i;
+    const grossRE = /\bbrutto\b/i;
+    const fuelRE = /(diesel|super\s*e?10?|e10|e5|benzin|kraftstoff|fuel|lpg|autogas|verbl)\b/i;
+    const moneyRE = /([0-9]{1,4}[,\.][0-9]{2})/g;
+    const dedup = new Map();
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i] || '';
+      const neighborhood = [lines[i - 1], line, lines[i + 1]].filter(Boolean).join(' ');
+      const hasTotal = totalLabelRE.test(line);
+      const nearTotal = !hasTotal && totalLabelRE.test(neighborhood);
+      const hasPayment = paymentRE.test(neighborhood);
+      const hasTax = taxRE.test(neighborhood);
+      const hasGross = grossRE.test(line);
+      const hasFuel = fuelRE.test(neighborhood);
+
+      moneyRE.lastIndex = 0;
+      for (const m of line.matchAll(moneyRE)) {
+        const value = _parseMoney(m[1]);
+        if (!value || value <= 2 || value >= 500) continue;
+
+        let score = 0.44;
+        if (hasTotal) score += 0.40;
+        else if (nearTotal) score += 0.22;
+        if (hasGross) score += 0.10;
+        if (hasFuel) score += 0.06;
+        if (hasTax) score -= 0.26;
+        if (hasPayment) score -= 0.58;
+
+        const candidate = {
+          value,
+          raw: m[1],
+          score,
+          conf: Math.max(0.28, Math.min(0.72, score)),
+          contextStrength: hasTotal ? 'labeled' : nearTotal ? 'label-nearby' : hasFuel ? 'context' : 'isolated',
+          label: hasTotal ? 'Gesamtbetrag' : hasPayment ? 'Zahlungszeile' : hasGross ? 'Brutto' : hasFuel ? 'Produktzeile' : 'Weitere Zahl',
+        };
+
+        const key = value.toFixed(2);
+        const prev = dedup.get(key);
+        if (!prev || candidate.score > prev.score) dedup.set(key, candidate);
+      }
+    }
+
+    return [...dedup.values()];
+  }
+
+  function _rankTotalFallbackCandidates(candidates, litersValue, pplValue) {
+    return [...(candidates || [])]
+      .map(c => {
+        let rank = c.score;
+
+        if (litersValue != null && litersValue > 0) {
+          const ratio = c.value / litersValue;
+          if (ratio >= 1.0 && ratio <= 3.5) {
+            rank += 0.22;
+            rank -= Math.min(0.18, Math.abs(ratio - 1.65) * 0.06);
+          } else {
+            rank -= 0.42;
+          }
+        }
+
+        if (pplValue != null && pplValue > 0) {
+          const impliedLiters = c.value / pplValue;
+          if (impliedLiters >= 5 && impliedLiters <= 120) rank += 0.08;
+          else rank -= 0.12;
+        }
+
+        return { ...c, rank };
+      })
+      .sort((a, b) => {
+        if (Math.abs(a.rank - b.rank) > 0.02) return b.rank - a.rank;
+        if (litersValue != null && litersValue > 0) {
+          const ar = Math.abs((a.value / litersValue) - 1.65);
+          const br = Math.abs((b.value / litersValue) - 1.65);
+          if (Math.abs(ar - br) > 0.03) return ar - br;
+        }
+        return b.value - a.value;
+      });
   }
 
   function _parseMoney(s) {
@@ -620,6 +770,12 @@ const OCR = (() => {
     if (!m) return null;
     let [, d, mo, y] = m;
     if (y.length === 2) y = parseInt(y, 10) > 50 ? '19' + y : '20' + y;
+    const yy = parseInt(y, 10);
+    const mm = parseInt(mo, 10);
+    const dd = parseInt(d, 10);
+    const currentYear = new Date().getFullYear();
+    if (yy < 1950 || yy > currentYear + 1) return null;
+    if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
     const iso = `${y}-${String(mo).padStart(2,'0')}-${String(d).padStart(2,'0')}`;
     return isNaN(new Date(iso).getTime()) ? null : iso;
   }
@@ -837,6 +993,81 @@ const OCR = (() => {
     if (window.App && App.updateFuelPreview) App.updateFuelPreview();
     if (window.App && App.toast) App.toast('Werte übernommen — km-Stand ergänzen!', 'success');
     closeOverlay();
+  }
+
+  function recalculateFromInputs() {
+    if (!_lastParsed) return;
+    const merged = _mergeParsedWithInputs();
+    _validateFinalize(merged);
+    _lastParsed = merged;
+    window.__OCR_LAST_PARSED__ = merged;
+    showResult(merged);
+  }
+
+  function _mergeParsedWithInputs(overrides = {}) {
+    const base = _lastParsed
+      ? JSON.parse(JSON.stringify(_lastParsed))
+      : {
+          date:          { value: null, raw: null, conf: 0, source: 'ocr', plausibility: 0 },
+          liters:        { value: null, raw: null, conf: 0, source: 'ocr', plausibility: 0 },
+          totalCost:     { value: null, raw: null, conf: 0, source: 'ocr', plausibility: 0 },
+          pricePerLiter: { value: null, raw: null, conf: 0, source: 'ocr', plausibility: 0 },
+        };
+
+    const applyField = (key, fieldId, parser, precision) => {
+      const field = base[key] || { value: null, raw: null, conf: 0, source: 'ocr', plausibility: 0 };
+      const hasOverride = Object.prototype.hasOwnProperty.call(overrides, key);
+      const rawInput = hasOverride ? overrides[key] : _val(fieldId);
+      const raw = rawInput == null ? '' : String(rawInput).trim();
+
+      if (!raw) {
+        base[key] = { ...field, value: null, raw: null, conf: 0, source: 'manual', contextStrength: 'manual', status: 'missing' };
+        return;
+      }
+
+      const parsed = parser(raw);
+      if (parsed == null) return;
+
+      const value = typeof precision === 'number' ? +parsed.toFixed(precision) : parsed;
+      base[key] = {
+        ...field,
+        value,
+        raw,
+        conf: 0.97,
+        source: 'manual',
+        contextStrength: 'manual',
+        status: 'safe',
+      };
+    };
+
+    const applyDate = () => {
+      const field = base.date || { value: null, raw: null, conf: 0, source: 'ocr', plausibility: 0 };
+      const hasOverride = Object.prototype.hasOwnProperty.call(overrides, 'date');
+      const rawInput = hasOverride ? overrides.date : _val('ocr-r-date');
+      const raw = rawInput == null ? '' : String(rawInput).trim();
+      if (!raw) {
+        base.date = { ...field, value: null, raw: null, conf: 0, source: 'manual', contextStrength: 'manual', status: 'missing' };
+        return;
+      }
+      const iso = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : _parseDate(raw);
+      if (!iso) return;
+      base.date = {
+        ...field,
+        value: iso,
+        raw,
+        conf: 0.97,
+        source: 'manual',
+        contextStrength: 'manual',
+        status: 'safe',
+      };
+    };
+
+    applyDate();
+    applyField('liters', 'ocr-r-liters', _parseLiters, 2);
+    applyField('totalCost', 'ocr-r-total', _parseMoney, 2);
+    applyField('pricePerLiter', 'ocr-r-ppl', _parsePricePerLiter, 4);
+
+    return base;
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -1454,6 +1685,7 @@ const OCR = (() => {
       const el    = document.getElementById(f.id);
       const hint  = document.getElementById(f.id + '-hint');
       if (!el) continue;
+      section?.querySelectorAll(`[data-ocr-alts-for="${f.id}"]`).forEach(node => node.remove());
       const d = parsed?.[f.key];
       el.value = (d && d.value != null) ? f.fmt(d.value) : '';
 
@@ -1477,6 +1709,7 @@ const OCR = (() => {
       if (status === 'missing') {
         msg = '✗ Nicht erkannt';
       } else if (status === 'safe') {
+        if (d.source === 'manual') { msg = '✓ Manuell gesetzt'; hint.innerHTML = msg; continue; }
         const ctx = d.contextStrength === 'labeled' ? ' (EUR/L-Label)' : '';
         msg = `✓ Erkannt${ctx}`;
       } else if (status === 'derived') {
@@ -1507,16 +1740,25 @@ const OCR = (() => {
       hint.innerHTML = msg;
 
       // ── Alternativen anzeigen (nur bei ppl) ─────────────────────
-      if (f.key === 'pricePerLiter' && d?._alts?.length) {
+      if (d?._alts?.length) {
         const altDiv = document.createElement('div');
+        altDiv.dataset.ocrAltsFor = f.id;
         altDiv.style.cssText = 'margin-top:3px;display:flex;gap:6px;flex-wrap:wrap';
         for (const alt of d._alts) {
           const btn = document.createElement('button');
           btn.type = 'button';
           btn.style.cssText = 'font-size:10px;padding:2px 6px;background:var(--bg2);border:1px solid var(--border);border-radius:4px;color:var(--t2);cursor:pointer';
-          btn.textContent = alt.value.toFixed(4);
-          btn.title = `Alternative: ${alt.value.toFixed(4)} €/L (${alt.contextStrength || ''})`;
-          btn.onclick = () => { el.value = alt.value.toFixed(4); altDiv.remove(); };
+          const altValue = (alt && alt.value != null) ? f.fmt(alt.value) : '';
+          btn.textContent = altValue;
+          btn.title = [alt.label, alt.contextStrength].filter(Boolean).join(' / ') || 'Alternative';
+          btn.onclick = () => {
+            el.value = altValue;
+            if (hint) {
+              hint.textContent = `✓ Alternative gewählt${alt.label ? ` (${alt.label})` : ''}`;
+              hint.style.color = 'var(--t3)';
+            }
+            altDiv.remove();
+          };
           altDiv.appendChild(btn);
         }
         const altLabel = document.createElement('span');
@@ -1570,6 +1812,7 @@ const OCR = (() => {
 
     // Buttons: welches Feld soll getappt werden?
     const tapFields = [
+      { key: 'date',          label: 'Datum',      id: 'ocr-r-date'   },
       { key: 'totalCost',     label: 'Betrag €',  id: 'ocr-r-total'  },
       { key: 'liters',        label: 'Liter',     id: 'ocr-r-liters' },
       { key: 'pricePerLiter', label: '€/L',       id: 'ocr-r-ppl'    },
@@ -1715,6 +1958,12 @@ const OCR = (() => {
             targetEl.value = String(extracted);
             const hint = document.getElementById(fieldId + '-hint');
             if (hint) { hint.textContent = '✓ Manuell aus Foto'; hint.style.color = 'var(--t3)'; }
+            const overrideKey = fieldKey === 'date' ? 'date' : fieldKey;
+            const merged = _mergeParsedWithInputs({ [overrideKey]: String(extracted) });
+            _validateFinalize(merged);
+            _lastParsed = merged;
+            window.__OCR_LAST_PARSED__ = merged;
+            showResult(merged);
           } else if (fieldKey === 'odometer') {
             _setVal('tf-odometer', String(Math.round(extracted)));
             if (window.App?.updateFuelPreview) App.updateFuelPreview();
@@ -1732,6 +1981,7 @@ const OCR = (() => {
   }
 
   function _tapFieldLabel(key) {
+    if (key === 'date') return 'Datum';
     return { totalCost: 'Betrag €', liters: 'Liter', pricePerLiter: '€/L', odometer: 'km-Stand' }[key] || key;
   }
 
@@ -1768,6 +2018,14 @@ const OCR = (() => {
   function _extractNumberForField(text, fieldKey) {
     const flat = _normalizeOCRText(text);
 
+    if (fieldKey === 'date') {
+      for (const m of flat.matchAll(/\b(\d{1,2}[.\-\/]\d{1,2}[.\-\/]\d{2,4})\b/g)) {
+        const iso = _parseDate(m[1]);
+        if (iso) return iso;
+      }
+      return null;
+    }
+
     if (fieldKey === 'odometer') {
       // km: große Ganzzahl
       const km = [...flat.matchAll(/\b(\d{4,6})\b/g)].map(m => parseInt(m[1], 10)).filter(v => v >= 1000 && v <= 999999);
@@ -1778,7 +2036,11 @@ const OCR = (() => {
       // ppl: 3-4 Dezimalstellen
       for (const m of flat.matchAll(/([0-9]{1,2}[,\.][0-9]{3,4})/g)) {
         const v = _parsePricePerLiter(m[1]);
-        if (v && v > 0.8 && v < 4.0) return +v.toFixed(4);
+        if (v && v >= 0.45 && v < 4.0) return +v.toFixed(4);
+      }
+      for (const m of flat.matchAll(/([0-9]{1,2}[,\.][0-9]{2})/g)) {
+        const v = _parsePricePerLiter(m[1]);
+        if (v && v >= 0.45 && v < 4.0) return +v.toFixed(4);
       }
       return null;
     }
@@ -1825,6 +2087,7 @@ const OCR = (() => {
 
   return {
     openOverlay, closeOverlay, handleFile, transfer,
+    recalculateFromInputs,
     parse, recognize,
     scanCropped, scanOriginal,
     rotateSrc90,
