@@ -21,6 +21,7 @@ const OCR = (() => {
   // ─────────────────────────────────────────────────────────────
   let _lastText = '';
   let _lastParsed = null;
+  let _lastWords = []; // Tesseract word-level bounding boxes für Position-Overlay
 
   // ─────────────────────────────────────────────────────────────
   // Tesseract worker
@@ -66,9 +67,11 @@ const OCR = (() => {
     if (onProgress) onProgress(5, 'Lade OCR-Engine…');
     const worker = await initWorker(onProgress);
     if (onProgress) onProgress(20, 'Analysiere Bild…');
-    const { data: { text } } = await worker.recognize(imageOrCanvas);
+    const { data } = await worker.recognize(imageOrCanvas);
+    // Wort-Koordinaten für Position-Overlay speichern
+    _lastWords = (data.words || []).filter(w => w.text && w.text.trim());
     if (onProgress) onProgress(100, 'Fertig');
-    return text || '';
+    return data.text || '';
   }
 
   // ─────────────────────────────────────────────────────────────
@@ -125,7 +128,8 @@ const OCR = (() => {
   function _isStrong(f, fieldName) {
     if (!f || !f.value) return false;
     if (fieldName === 'pricePerLiter') {
-      return (f.contextStrength === 'labeled' || f.contextStrength === 'label-nearby') && f.conf >= 0.70;
+      return (f.contextStrength === 'labeled' || f.contextStrength === 'label-nearby' ||
+              f.contextStrength === 'derived'  || f.contextStrength === 'manual') && f.conf >= 0.70;
     }
     return f.conf >= 0.72 && f.contextStrength !== 'brute-force';
   }
@@ -187,6 +191,23 @@ const OCR = (() => {
       if (money.length) {
         money.sort((a,b) => b.value - a.value);
         result.totalCost = { value: money[0].value, raw: money[0].raw, conf: 0.60 };
+      }
+    }
+    // Kraftstoff-Produktzeile als zusätzliche Quelle: "*000003 Diesel  49,43 EUR"
+    // Wird als Fallback gesetzt, aber auch als Alternativkandidat für das Einkaufs-Szenario
+    // (Gesamtbetrag enthält Nicht-Kraftstoff-Artikel → Produktzeilen-Betrag ist korrekt).
+    if (!result.totalCost.value) {
+      const fuelProductLineRE = /\b(diesel|super\s*e?10?|e10|e5|benzin|lpg|autogas|kraftstoff)\b/i;
+      for (const line of lines) {
+        if (!fuelProductLineRE.test(line)) continue;
+        const m = line.match(/([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur|euro)\b/i);
+        if (m) {
+          const v = _parseMoney(m[1]);
+          if (v && v > 2 && v < 500) {
+            result.totalCost = { value: v, raw: m[1], conf: 0.78, contextStrength: 'fuel-product-line' };
+            break;
+          }
+        }
       }
     }
 
@@ -299,6 +320,38 @@ const OCR = (() => {
       if (alts.length) result.liters._alts = alts;
     }
 
+    // 1b) *Zp-Zeile: "*Zp 03  50,00 l  1,439 EUR/l" — Shell/Aral/BP-Format
+    // Sicherheitsnetz wenn die l→1-Normalisierung noch nicht greift.
+    // Erste Zahl im plausiblen Liter-Bereich auf der *Zp-Zeile = Liter.
+    if (!result.liters.value) {
+      const zpLineRE = /^\*?zp\s*\d+\b/i;
+      for (let i = 0; i < lines.length; i++) {
+        if (!zpLineRE.test(lines[i])) continue;
+        const zpNums = [...lines[i].matchAll(/\b(\d{1,3}[,.]\d{2,3})\b/g)]
+          .map(m => ({ raw: m[1], value: _parseLiters(m[1]) }))
+          .filter(x => x.value && x.value >= 5 && x.value <= 120);
+        if (zpNums.length) {
+          const best = zpNums[0];
+          result.liters = { value: best.value, raw: best.raw, conf: 0.88, contextStrength: 'zp-line' };
+          // Kraftstoff-Produktzeile direkt vor der *Zp-Zeile → totalCost
+          if (i > 0 && !result.totalCost.value) {
+            const prev = lines[i - 1];
+            if (/\b(diesel|super|e10|e5|benzin|lpg|autogas|kraftstoff)\b/i.test(prev)) {
+              const tm = prev.match(/([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur|euro)\b/i);
+              if (tm) {
+                const tv = _parseMoney(tm[1]);
+                if (tv && tv > 2 && tv < 500) {
+                  result.totalCost = { value: tv, raw: tm[1], conf: 0.88,
+                    contextStrength: 'fuel-product-line' };
+                }
+              }
+            }
+          }
+        }
+        break; // nur die erste *Zp-Zeile auswerten
+      }
+    }
+
     // 2) Label-Zeile: "Menge / Liter / Volumen / Kraftstoffmenge"
     if (!result.liters.value) {
       const litersLabelRE = /(?:kraftstoffmenge|menge|liter|vol(?:umen)?|mng|ltrs?|getankt)\b[^\d]{0,25}([0-9]{1,3}[,\.][0-9]{2,3})/gi;
@@ -378,14 +431,30 @@ const OCR = (() => {
 
     // ── KREUZVALIDIERUNG ─────────────────────────────────────────
 
-    // ⛔ Sanity-Prüfung ZUERST: wenn Liter ≈ Gesamtbetrag → falsch erkannt
-    // (passiert wenn Preis als Liter gewertet wird, z.B. 84,30 l statt 49,04 l)
-    // Realistischer Kraftstoffpreis: mindestens ~1,10 €/L (EU-Minimum), max 3,50 €/L
+    // ⛔ Sanity-Prüfung: Liter/Betrag-Verhältnis muss als realistischer EUR/L-Preis plausibel sein.
+    // Grenzen: 0.45–3.50 EUR/L (abgestimmt auf _RANGES.pricePerLiter.warn, inkl. LPG ~0.729).
+    // Frühere Grenze 1.05 war zu hoch — verwarf gültige LPG-Preise und alte Diesel-Preise.
     if (result.liters.value && result.totalCost.value) {
       const ratio = result.totalCost.value / result.liters.value;
-      if (ratio < 1.05 || ratio > 3.50) {
-        console.warn('OCR: Liter-Wert verworfen (ergibt unrealistischen €/L-Preis):', result.liters.value, '→', ratio.toFixed(3), '€/L');
-        result.liters = { value: null, raw: null, conf: 0 };
+      if (ratio < 0.45 || ratio > 3.50) {
+        // Bevor Liter verworfen wird: gibt es einen besseren Betrag in den Fallback-Kandidaten?
+        const knownPpl = result.pricePerLiter?.value;
+        const betterTotal = totalFallbackCandidates
+          .filter(c => {
+            const r = c.value / result.liters.value;
+            if (r < 0.45 || r > 3.5) return false;
+            if (knownPpl) return Math.abs(r - knownPpl) / knownPpl < 0.12;
+            return true;
+          })
+          .sort((a, b) => b.score - a.score)[0];
+        if (betterTotal) {
+          console.warn('OCR: Betrag korrigiert (war unplausibel):', result.totalCost.value, '→', betterTotal.value);
+          result.totalCost = { value: betterTotal.value, raw: betterTotal.raw,
+            conf: betterTotal.conf, contextStrength: betterTotal.contextStrength, source: 'ocr' };
+        } else {
+          console.warn('OCR: Liter-Wert verworfen (kein plausibler Betrag gefunden):', result.liters.value, '→', ratio.toFixed(3), '€/L');
+          result.liters = { value: null, raw: null, conf: 0 };
+        }
       }
     }
 
@@ -541,22 +610,46 @@ const OCR = (() => {
             ppl.status = 'conflicting'; tot.status = lit.status = 'uncertain';
           }
         }
+
+        // Sonderfall: ppl ist 'isolated'/'brute-force' (kein EUR/L-Label), aber
+        // tot und lit sind beide stark → ppl immer aus tot÷lit ableiten.
+        // Greift auch wenn Abweichung < 5% (z.B. nach manueller Betrag-Korrektur).
+        if ((ppl.contextStrength === 'isolated' || ppl.contextStrength === 'brute-force') &&
+            ppl.source !== 'manual' &&
+            _isStrong(tot, 'totalCost') && _isStrong(lit, 'liters')) {
+          const derivedPpl = +(tot.value / lit.value).toFixed(4);
+          const stPpl = _rangeStatus('pricePerLiter', derivedPpl);
+          if (stPpl !== 'outside') {
+            console.warn('OCR: €/L (isoliert) ersetzt durch tot÷lit:', ppl.value, '→', derivedPpl);
+            ppl.value = derivedPpl; ppl.source = 'derived'; ppl.contextStrength = 'derived';
+            ppl.reason = `${tot.value.toFixed(2)} € ÷ ${lit.value.toFixed(2)} L`;
+            ppl.status = (stPpl === 'warn') ? 'uncertain' : 'derived';
+            if (!tot.status || tot.status === 'conflicting' || tot.status === 'uncertain') tot.status = 'safe';
+            if (!lit.status || lit.status === 'conflicting' || lit.status === 'uncertain') lit.status = 'safe';
+          }
+        }
       }
 
     } else {
       // ── 2 Felder: fehlendes ableiten ────────────────────────────
 
       if (has(tot) && has(ppl) && !has(lit)) {
-        // ppl muss zumindest 'label-nearby' sein, damit Liter sinnvoll abgeleitet wird
-        const pplOk = ppl.contextStrength === 'labeled' || ppl.contextStrength === 'label-nearby';
-        const allowWeakPpl = !pplOk && tot.conf >= 0.80 && ppl.conf >= 0.35;
-        if (tot.conf >= 0.65 && ((pplOk && ppl.conf >= 0.65) || allowWeakPpl)) {
+        // ppl MUSS normalerweise 'labeled'/'label-nearby' sein, damit Liter abgeleitet wird.
+        // Ausnahme: wenn Betrag MANUELL gesetzt wurde, wird auch ein 'isolated' ppl akzeptiert
+        // (Nutzer hat den richtigen Betrag eingegeben → Division durch isoliertes ppl ergibt zumindest
+        //  einen plausiblen Startpunkt, besser als "Nicht erkannt").
+        const manualTot = tot.source === 'manual' && tot.conf >= 0.90;
+        const pplOk = ppl.contextStrength === 'labeled' || ppl.contextStrength === 'label-nearby'
+                   || ppl.contextStrength === 'derived'  || ppl.contextStrength === 'manual'
+                   || manualTot;
+        const minPplConf = manualTot ? 0.25 : 0.65;
+        if (tot.conf >= 0.65 && pplOk && ppl.conf >= minPplConf) {
           const derived = +(tot.value / ppl.value).toFixed(2);
           if (_rangeStatus('liters', derived) !== 'outside') {
-            lit.value = derived; lit.source = 'derived'; lit.conf = allowWeakPpl ? 0.62 : 0.72;
+            lit.value = derived; lit.source = 'derived'; lit.conf = 0.72;
             lit.contextStrength = 'derived';
             lit.reason = `${tot.value.toFixed(2)} € ÷ ${ppl.value.toFixed(4)} €/L`;
-            lit.status = (allowWeakPpl || _rangeStatus('liters', derived) !== 'safe') ? 'uncertain' : 'derived';
+            lit.status = _rangeStatus('liters', derived) !== 'safe' ? 'uncertain' : 'derived';
           }
         }
         tot.status = tot.status || (tot.conf >= 0.80 ? 'safe' : 'uncertain');
@@ -583,7 +676,8 @@ const OCR = (() => {
       }
 
       if (has(lit) && has(ppl) && !has(tot)) {
-        const pplOk = ppl.contextStrength === 'labeled' || ppl.contextStrength === 'label-nearby';
+        const pplOk = ppl.contextStrength === 'labeled' || ppl.contextStrength === 'label-nearby' ||
+                      ppl.contextStrength === 'derived'  || ppl.contextStrength === 'manual';
         if (lit.conf >= 0.65 && ppl.conf >= 0.65 && pplOk) {
           const derived = +(lit.value * ppl.value).toFixed(2);
           if (_rangeStatus('totalCost', derived) !== 'outside') {
@@ -619,6 +713,17 @@ const OCR = (() => {
     if (lit.value && (lit.value < 1 || lit.value > 200))  lit.conf = Math.min(lit.conf, 0.25);
     if (tot.value && (tot.value < 2 || tot.value > 500))  tot.conf = Math.min(tot.conf, 0.25);
     if (ppl.value && (ppl.value < 0.5 || ppl.value > 5.0)) ppl.conf = Math.min(ppl.conf, 0.20);
+
+    // Zusatzwarnung: Liter < 10 L UND Betrag < 20 EUR ist praktisch ausgeschlossen
+    // (kleinste reale Betankung ~2 L LPG × 0.60 EUR/L = 1.20 EUR — aber in der Praxis meist >> 20 L × 1 EUR).
+    // Beide Werte zusammen so klein → fast sicher eine falsch erkannte Zahl (z.B. MwSt-Betrag).
+    if (lit.value && lit.value < 10 && tot.value && tot.value < 20
+        && lit.source !== 'manual' && tot.source !== 'manual') {
+      if (lit.status === 'derived' || lit.status === 'safe') lit.status = 'uncertain';
+      if (tot.status === 'derived' || tot.status === 'safe') tot.status = 'uncertain';
+      lit.conf = Math.min(lit.conf, 0.40);
+      tot.conf = Math.min(tot.conf, 0.40);
+    }
   }
 
   function _collectTotalFallbackCandidates(lines) {
@@ -691,6 +796,20 @@ const OCR = (() => {
           if (impliedLiters >= 5 && impliedLiters <= 120) rank += 0.08;
           else rank -= 0.12;
         }
+
+        // Wenn Liter UND ppl bekannt: direkter Konsistenzvergleich (Einkaufs-Szenario)
+        // Kraftstoffbetrag = Liter × ppl; Gesamtbetrag kann mehr enthalten.
+        if (litersValue != null && litersValue > 0 && pplValue != null && pplValue > 0) {
+          const expected = litersValue * pplValue;
+          const dev = Math.abs(c.value - expected) / expected;
+          if (dev < 0.02) rank += 0.40;
+          else if (dev < 0.05) rank += 0.20;
+          else if (dev < 0.10) rank += 0.05;
+          else rank -= 0.20;
+        }
+
+        // Bonus für direkte Kraftstoff-Produktzeile (wichtig wenn Gesamtbetrag Einkäufe enthält)
+        if (c.contextStrength === 'fuel-product-line') rank += 0.15;
 
         return { ...c, rank };
       })
@@ -786,6 +905,8 @@ const OCR = (() => {
     s = s.replace(/\r\n?/g, '\n');
     s = s.replace(/\u00A0/g, ' ');
     s = s.replace(/\bEURO\b/gi, 'EUR');
+    // "71,95 EU" (R am Rand abgeschnitten) → "71,95 EUR"
+    s = s.replace(/(\d[,\.]\d{2})\s+EU\b(?!R)/gi, '$1 EUR');
 
     // Leerzeichen im Dezimalwert: "84 30 EUR" → "84,30 EUR"
     s = s.replace(/\b(\d{1,4})\s+(\d{2})\b(?=\s*(?:€|eur|euro|\/\s*[lLiI1]|l\b|liter\b))/gi, '$1,$2');
@@ -797,7 +918,7 @@ const OCR = (() => {
     // ── SCHLÜSSEL-FIX: OCR liest "l" (Liter) als "1" (Ziffer) ────────
     // Shell/BP/Aral: "49,04 1  84,30 EUR" → "49,04 l  84,30 EUR"
     s = s.replace(
-      /(\b\d{1,3}[,.]\d{2})\s+1\b(?=\s+\d{1,4}[,.]\d{2}\s*(?:€|eur|euro|\s*#|\s*$))/gi,
+      /(\b\d{1,3}[,.]\d{2})\s+1\b(?=\s+\d{1,4}[,.]\d{2,4}\s*(?:€|eur|euro|\/\s*[lLiI1]|\s*#|\s*$))/gi,
       '$1 l'
     );
     s = s.replace(/(\b\d{1,3}[,.]\d{2})\s+1\s*$/gm, '$1 l');
@@ -1029,15 +1150,29 @@ const OCR = (() => {
       if (parsed == null) return;
 
       const value = typeof precision === 'number' ? +parsed.toFixed(precision) : parsed;
-      base[key] = {
-        ...field,
-        value,
-        raw,
-        conf: 0.97,
-        source: 'manual',
-        contextStrength: 'manual',
-        status: 'safe',
-      };
+
+      // Erkennt ob der Nutzer diesen Wert wirklich geändert hat oder ob der Input-Wert
+      // noch identisch mit dem OCR-Ergebnis ist (Nutzer hat nur ein anderes Feld geändert).
+      // Wenn nicht geändert: originale Metadaten beibehalten, damit _validateFinalize
+      // unsichere/abgeleitete Felder neu berechnen kann.
+      const origValue = field.value;
+      const userChanged = hasOverride || origValue == null || Math.abs(value - origValue) > 0.005;
+
+      if (userChanged) {
+        base[key] = {
+          ...field,
+          value,
+          raw,
+          conf: 0.97,
+          source: 'manual',
+          contextStrength: 'manual',
+          status: 'safe',
+        };
+      } else {
+        // Wert stammt noch von OCR — nur Wert aktualisieren, Konfidenz/Status bleiben original.
+        // Löscht aber manuell gesetzte Status wenn der Wert gleich geblieben ist.
+        base[key] = { ...field, value };
+      }
     };
 
     const applyDate = () => {
@@ -1051,15 +1186,20 @@ const OCR = (() => {
       }
       const iso = /^\d{4}-\d{2}-\d{2}$/.test(raw) ? raw : _parseDate(raw);
       if (!iso) return;
-      base.date = {
-        ...field,
-        value: iso,
-        raw,
-        conf: 0.97,
-        source: 'manual',
-        contextStrength: 'manual',
-        status: 'safe',
-      };
+      const userChanged = hasOverride || !field.value || iso !== field.value;
+      if (userChanged) {
+        base.date = {
+          ...field,
+          value: iso,
+          raw,
+          conf: 0.97,
+          source: 'manual',
+          contextStrength: 'manual',
+          status: 'safe',
+        };
+      } else {
+        base.date = { ...field, value: iso };
+      }
     };
 
     applyDate();
@@ -1681,13 +1821,17 @@ const OCR = (() => {
       { key: 'pricePerLiter', id: 'ocr-r-ppl',    fmt: v => v != null ? v.toFixed(4) : '' },
     ];
 
+    const focusedId = document.activeElement?.id;
     for (const f of fields) {
       const el    = document.getElementById(f.id);
       const hint  = document.getElementById(f.id + '-hint');
       if (!el) continue;
       section?.querySelectorAll(`[data-ocr-alts-for="${f.id}"]`).forEach(node => node.remove());
       const d = parsed?.[f.key];
-      el.value = (d && d.value != null) ? f.fmt(d.value) : '';
+      // Aktives Eingabefeld nie überschreiben — Nutzer tippt gerade darin
+      if (el.id !== focusedId) {
+        el.value = (d && d.value != null) ? f.fmt(d.value) : '';
+      }
 
       if (!hint) continue;
       hint.style.display = 'block';
@@ -1758,6 +1902,8 @@ const OCR = (() => {
               hint.style.color = 'var(--t3)';
             }
             altDiv.remove();
+            // Neue Konsistenzprüfung mit gewähltem Wert anstoßen
+            recalculateFromInputs();
           };
           altDiv.appendChild(btn);
         }
@@ -1774,6 +1920,39 @@ const OCR = (() => {
   }
 
   // ─────────────────────────────────────────────────────────────
+  // Wort-Bounding-Box-Suche (Tesseract word data)
+  // ─────────────────────────────────────────────────────────────
+
+  /**
+   * Sucht die Bounding-Box eines OCR-Rohwerts in _lastWords.
+   * Gibt {x0,y0,x1,y1} in Quell-Pixel zurück oder null.
+   */
+  function _findValueBbox(rawValue) {
+    if (!rawValue || !_lastWords.length) return null;
+    const norm = v => String(v).replace(/\s+/g, '').replace(',', '.').toLowerCase();
+    const target = norm(rawValue);
+    if (!target) return null;
+
+    // 1) Direkter Einzelwort-Treffer
+    for (const w of _lastWords) {
+      if (norm(w.text) === target) return w.bbox;
+    }
+    // 2) Zwei aufeinanderfolgende Wörter zusammenführen
+    for (let i = 0; i < _lastWords.length - 1; i++) {
+      if (norm(_lastWords[i].text + _lastWords[i + 1].text) === target) {
+        const a = _lastWords[i].bbox, b = _lastWords[i + 1].bbox;
+        return { x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0),
+                 x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1) };
+      }
+    }
+    // 3) Teilstring-Treffer (wenn Wort Dezimaltrenner enthält, z.B. "71,58" in "71,58EUR")
+    for (const w of _lastWords) {
+      if (norm(w.text).includes(target)) return w.bbox;
+    }
+    return null;
+  }
+
+  // ─────────────────────────────────────────────────────────────
   // Tap-Workflow: Nutzer tippt direkt auf Belegbild
   // ─────────────────────────────────────────────────────────────
 
@@ -1785,42 +1964,74 @@ const OCR = (() => {
     const host = document.getElementById('ocr-result-section');
     if (!host) return;
 
-    // Bestehende Tap-Sektion entfernen (falls vorhanden)
     const existing = document.getElementById('ocr-tap-section');
     if (existing) existing.remove();
 
-    // Prüfe ob Tap-Angebot sinnvoll: mind. 1 Feld unsicher/fehlend/widersprüchlich
-    const needsTap = ['liters', 'totalCost', 'pricePerLiter'].some(k => {
+    const needsTap = ['date', 'liters', 'totalCost', 'pricePerLiter'].some(k => {
       const st = parsed?.[k]?.status;
       return !st || st === 'missing' || st === 'uncertain' || st === 'conflicting';
     });
-    if (!needsTap) return;
 
     const tapSec = document.createElement('div');
     tapSec.id = 'ocr-tap-section';
     tapSec.style.cssText = 'margin-top:12px;padding:10px;background:var(--bg2);border:1px solid var(--border);border-radius:10px';
 
     const tapHead = document.createElement('div');
-    tapHead.style.cssText = 'font-family:var(--font-mono);font-size:11px;letter-spacing:1px;color:var(--amber);text-transform:uppercase;margin-bottom:8px';
-    tapHead.textContent = 'Wert auf Beleg einrahmen';
+    tapHead.style.cssText = `font-family:var(--font-mono);font-size:11px;letter-spacing:1px;color:${needsTap ? 'var(--amber)' : 'var(--t3)'};text-transform:uppercase;margin-bottom:6px`;
+    tapHead.textContent = needsTap ? 'Wert auf Beleg einrahmen' : 'Erkannte Werte prüfen / korrigieren';
     tapSec.appendChild(tapHead);
 
-    const tapInfo = document.createElement('div');
-    tapInfo.style.cssText = 'font-size:12px;color:var(--t3);margin-bottom:8px';
-    tapInfo.textContent = 'Feld wählen, dann Kasten um die Zahl ziehen:';
-    tapSec.appendChild(tapInfo);
+    const FIELD_COLORS = {
+      date:          { stroke: '#ffbf00', fill: 'rgba(255,191,0,0.18)',  label: 'Datum'  },
+      liters:        { stroke: '#4fc96a', fill: 'rgba(79,201,106,0.18)', label: 'Liter'  },
+      totalCost:     { stroke: '#ff5555', fill: 'rgba(255,85,85,0.18)',  label: 'Betrag' },
+      pricePerLiter: { stroke: '#55aaff', fill: 'rgba(85,170,255,0.18)', label: '€/L'   },
+    };
 
-    // Buttons: welches Feld soll getappt werden?
     const tapFields = [
-      { key: 'date',          label: 'Datum',      id: 'ocr-r-date'   },
-      { key: 'totalCost',     label: 'Betrag €',  id: 'ocr-r-total'  },
-      { key: 'liters',        label: 'Liter',     id: 'ocr-r-liters' },
-      { key: 'pricePerLiter', label: '€/L',       id: 'ocr-r-ppl'    },
-      { key: 'odometer',      label: 'km-Stand',  id: null            },
+      { key: 'date',          label: 'Datum',    id: 'ocr-r-date'   },
+      { key: 'totalCost',     label: 'Betrag €', id: 'ocr-r-total'  },
+      { key: 'liters',        label: 'Liter',    id: 'ocr-r-liters' },
+      { key: 'pricePerLiter', label: '€/L',      id: 'ocr-r-ppl'    },
+      { key: 'odometer',      label: 'km-Stand', id: null            },
     ];
 
+    // Erkannte Feld-Positionen aus Tesseract word data
+    const bboxMap = {};
+    for (const k of Object.keys(FIELD_COLORS)) {
+      const raw = parsed?.[k]?.raw;
+      if (raw) { const b = _findValueBbox(raw); if (b) bboxMap[k] = b; }
+    }
+    const hasBoxes = Object.keys(bboxMap).length > 0;
+
+    // Statuszeile
+    const statusLine = document.createElement('div');
+    statusLine.style.cssText = 'font-size:11px;color:var(--t3);margin-bottom:6px;min-height:16px';
+    statusLine.textContent = hasBoxes
+      ? 'Erkannte Felder antippen oder Feld wählen → Kasten ziehen:'
+      : 'Feld wählen, dann Kasten um die Zahl ziehen:';
+    tapSec.appendChild(statusLine);
+
+    // Feld-Auswahl-Buttons
     const btnRow = document.createElement('div');
     btnRow.style.cssText = 'display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px';
+
+    // selectField wird von Buttons und Bild-Tap-Hit-Test aufgerufen (redrawCanvas ist Closure-ref)
+    let selectedKey = null;
+    const selectField = (key) => {
+      selectedKey = key;
+      _tapTarget = key;
+      btnRow.querySelectorAll('button[data-tap-key]').forEach(b => {
+        const active = b.dataset.tapKey === key;
+        b.style.background = active ? 'var(--amber)' : '';
+        b.style.color      = active ? '#000' : '';
+      });
+      redrawCanvas();
+      const tf = tapFields.find(f => f.key === key);
+      statusLine.textContent = tf ? `Kasten um "${tf.label}" ziehen:` : 'Kasten ziehen:';
+      statusLine.style.color = 'var(--amber)';
+    };
+
     for (const tf of tapFields) {
       const btn = document.createElement('button');
       btn.type = 'button';
@@ -1828,17 +2039,165 @@ const OCR = (() => {
       btn.style.cssText = 'font-size:12px;padding:5px 10px;flex:1;min-width:70px';
       btn.textContent = tf.label;
       btn.dataset.tapKey = tf.key;
-      btn.onclick = () => _activateTapMode(tf.key, tf.id, imgSrc, tapSec, btnRow);
+      btn.onclick = () => selectField(tf.key);
       btnRow.appendChild(btn);
     }
     tapSec.appendChild(btnRow);
 
-    // Canvas für Tap
-    const tapCanvasWrap = document.createElement('div');
-    tapCanvasWrap.id = 'ocr-tap-canvas-wrap';
-    tapCanvasWrap.style.cssText = 'display:none;position:relative;margin-top:6px';
-    tapSec.appendChild(tapCanvasWrap);
+    // ── Kombiniertes Canvas: Bild + farbige Rahmen + Einrahmen ────
+    const W = imgSrc.width, H = imgSrc.height;
+    const maxDispW = 340, maxDispH = 520;
+    const imgAspect = W / H;
+    let dispW = Math.min(W, maxDispW);
+    let dispH = Math.round(dispW / imgAspect);
+    if (dispH > maxDispH) { dispH = maxDispH; dispW = Math.round(dispH * imgAspect); }
 
+    const tc = document.createElement('canvas');
+    tc.id = 'ocr-tap-canvas';
+    tc.width = W; tc.height = H;
+    tc.style.cssText = `display:block;width:${dispW}px;height:${dispH}px;max-width:100%;border-radius:8px;border:2px solid ${needsTap ? 'var(--amber)' : 'var(--border)'};cursor:crosshair;touch-action:none;user-select:none`;
+    const tctx = tc.getContext('2d');
+
+    const pad = Math.max(4, W / 200);
+    const fontSize = Math.max(20, W / 40);
+
+    // redrawCanvas ist als var (nicht const) deklariert, damit selectField es per Closure referenzieren kann
+    // bevor es initialisiert wurde — tatsächlich wird es nur aufgerufen wenn Nutzer klickt (asynchron), also safe
+    const redrawCanvas = (dragA, dragB) => {
+      tctx.clearRect(0, 0, W, H);
+      tctx.drawImage(imgSrc, 0, 0);
+
+      // Erkannte Felder einzeichnen
+      for (const [k, bbox] of Object.entries(bboxMap)) {
+        const fc = FIELD_COLORS[k];
+        if (!fc) continue;
+        const isSelected = selectedKey === k;
+        const bx = bbox.x0 - pad, by = bbox.y0 - pad;
+        const bw = bbox.x1 - bbox.x0 + pad * 2, bh = bbox.y1 - bbox.y0 + pad * 2;
+        tctx.save();
+        tctx.strokeStyle = fc.stroke;
+        tctx.lineWidth = isSelected ? Math.max(4, W / 150) : Math.max(2, W / 300);
+        tctx.fillStyle = isSelected ? fc.fill.replace('0.18', '0.32') : fc.fill;
+        tctx.beginPath(); tctx.rect(bx, by, bw, bh); tctx.fill(); tctx.stroke();
+        tctx.font = `bold ${fontSize}px sans-serif`;
+        tctx.fillStyle = fc.stroke;
+        const labelY = (by - 4) > fontSize ? (by - 4) : (by + bh + fontSize + 2);
+        tctx.fillText(fc.label, bx + 2, labelY);
+        tctx.restore();
+      }
+
+      // Nutzer-Einrahmen (gestrichelter Kasten)
+      if (dragA && dragB) {
+        const fc = selectedKey ? FIELD_COLORS[selectedKey] : null;
+        const rx = Math.min(dragA.x, dragB.x), ry = Math.min(dragA.y, dragB.y);
+        const rw = Math.abs(dragB.x - dragA.x), rh = Math.abs(dragB.y - dragA.y);
+        if (rw >= 2 && rh >= 2) {
+          tctx.save();
+          tctx.fillStyle   = fc ? fc.fill   : 'rgba(255,191,0,0.15)';
+          tctx.strokeStyle = fc ? fc.stroke : '#ffbf00';
+          tctx.lineWidth   = Math.max(2, W / 400);
+          tctx.setLineDash([8, 4]);
+          tctx.beginPath(); tctx.rect(rx, ry, rw, rh); tctx.fill(); tctx.stroke();
+          tctx.restore();
+        }
+      }
+    };
+
+    redrawCanvas();
+
+    const getScale = () => {
+      const r = tc.getBoundingClientRect();
+      return { sx: W / r.width, sy: H / r.height };
+    };
+    const toSrc = (cx, cy) => {
+      const { sx, sy } = getScale();
+      return { x: Math.round(cx * sx), y: Math.round(cy * sy) };
+    };
+    const getCanvasXY = ev => {
+      const r = tc.getBoundingClientRect();
+      return { x: ev.clientX - r.left, y: ev.clientY - r.top };
+    };
+
+    let dragStart = null;
+
+    tc.addEventListener('pointerdown', ev => {
+      ev.preventDefault(); ev.stopPropagation();
+      tc.setPointerCapture?.(ev.pointerId);
+      const { x: cpx, y: cpy } = getCanvasXY(ev);
+      const srcPt = toSrc(cpx, cpy);
+      // Hit-Test: Klick auf erkannten Rahmen → Feld vorauswählen
+      const p2 = Math.max(pad * 3, 20);
+      for (const [k, bbox] of Object.entries(bboxMap)) {
+        if (srcPt.x >= bbox.x0 - p2 && srcPt.x <= bbox.x1 + p2 &&
+            srcPt.y >= bbox.y0 - p2 && srcPt.y <= bbox.y1 + p2) {
+          selectField(k); break;
+        }
+      }
+      dragStart = srcPt;
+      redrawCanvas(dragStart, dragStart);
+    }, { passive: false });
+
+    tc.addEventListener('pointermove', ev => {
+      if (!dragStart) return;
+      ev.preventDefault(); ev.stopPropagation();
+      const { x, y } = getCanvasXY(ev);
+      redrawCanvas(dragStart, toSrc(x, y));
+    }, { passive: false });
+
+    tc.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); });
+
+    tc.addEventListener('pointerup', async ev => {
+      ev.stopPropagation();
+      if (!dragStart) { ev.preventDefault(); return; }
+      ev.preventDefault();
+      const { x, y } = getCanvasXY(ev);
+      const dragEnd = toSrc(x, y);
+      redrawCanvas(dragStart, dragEnd);
+      const rx = Math.min(dragStart.x, dragEnd.x), ry = Math.min(dragStart.y, dragEnd.y);
+      const rw = Math.abs(dragEnd.x - dragStart.x), rh = Math.abs(dragEnd.y - dragStart.y);
+      dragStart = null;
+
+      if (rw < 15 || rh < 8) { redrawCanvas(); return; } // Tap, kein Drag
+
+      if (!selectedKey) {
+        statusLine.textContent = '⚠ Zuerst ein Feld wählen (Datum, Betrag …)';
+        statusLine.style.color = 'var(--amber)';
+        redrawCanvas(); return;
+      }
+
+      statusLine.textContent = 'Lese markierten Bereich…';
+      statusLine.style.color = 'var(--t3)';
+      try {
+        const tf = tapFields.find(f => f.key === selectedKey);
+        const extracted = await _ocrRegionRect(imgSrc, rx, ry, rw, rh, selectedKey);
+        if (extracted != null) {
+          const targetEl = tf?.id ? document.getElementById(tf.id) : null;
+          if (targetEl) {
+            targetEl.value = String(extracted);
+            const hint = document.getElementById(tf.id + '-hint');
+            if (hint) { hint.textContent = '✓ Manuell aus Foto'; hint.style.color = 'var(--t3)'; }
+            const merged = _mergeParsedWithInputs({ [selectedKey]: String(extracted) });
+            _validateFinalize(merged);
+            _lastParsed = merged;
+            window.__OCR_LAST_PARSED__ = merged;
+            showResult(merged);
+          } else if (selectedKey === 'odometer') {
+            _setVal('tf-odometer', String(Math.round(extracted)));
+            if (window.App?.updateFuelPreview) App.updateFuelPreview();
+            statusLine.textContent = `✓ km-Stand: ${extracted}`;
+          }
+        } else {
+          statusLine.textContent = '⚠ Keine Zahl erkannt — anderen Bereich markieren';
+          redrawCanvas();
+        }
+      } catch (e) {
+        statusLine.textContent = '✗ Fehler — nochmal versuchen';
+      }
+    }, { passive: false });
+
+    tc.addEventListener('pointercancel', () => { dragStart = null; redrawCanvas(); });
+
+    tapSec.appendChild(tc);
     host.appendChild(tapSec);
   }
 
@@ -1850,14 +2209,9 @@ const OCR = (() => {
     return c;
   }
 
-  function _activateTapMode(fieldKey, fieldId, imgCanvas, tapSec, btnRow) {
-    _tapTarget = fieldKey;
-
-    btnRow.querySelectorAll('button').forEach(b => {
-      b.style.background = b.dataset.tapKey === fieldKey ? 'var(--amber)' : '';
-      b.style.color      = b.dataset.tapKey === fieldKey ? '#000' : '';
-    });
-
+  // _activateTapMode ist nicht mehr im Einsatz — Logik jetzt direkt in _ensureTapSection
+  function _activateTapMode(_fieldKey, _fieldId, _imgCanvas, _tapSec, _btnRow) {
+    // noop — combined canvas in _ensureTapSection ersetzt diese Funktion
     const wrap = document.getElementById('ocr-tap-canvas-wrap');
     if (!wrap) return;
     wrap.style.display = 'block';
@@ -1869,11 +2223,13 @@ const OCR = (() => {
     info.textContent = `Kasten um "${_tapFieldLabel(fieldKey)}" ziehen:`;
     wrap.appendChild(info);
 
-    // Canvas skaliert auf max 320px Höhe
-    const maxH = 320;
+    // Canvas: Breiten-basiertes Scaling (Hochformat-Belege füllen die verfügbare Breite)
+    const maxDispW = 340;
+    const maxDispH = 520;
     const aspect = imgCanvas.width / imgCanvas.height;
-    const dispH = Math.min(maxH, imgCanvas.height);
-    const dispW = Math.round(dispH * aspect);
+    let dispW = Math.min(imgCanvas.width, maxDispW);
+    let dispH = Math.round(dispW / aspect);
+    if (dispH > maxDispH) { dispH = maxDispH; dispW = Math.round(dispH * aspect); }
 
     const tc = document.createElement('canvas');
     tc.id = 'ocr-tap-canvas';
@@ -1918,6 +2274,7 @@ const OCR = (() => {
 
     tc.addEventListener('pointerdown', ev => {
       ev.preventDefault();
+      ev.stopPropagation();
       tc.setPointerCapture?.(ev.pointerId);
       const { x, y } = getCanvasXY(ev);
       dragStart = toSrc(x, y);
@@ -1927,12 +2284,17 @@ const OCR = (() => {
     tc.addEventListener('pointermove', ev => {
       if (!dragStart) return;
       ev.preventDefault();
+      ev.stopPropagation();
       const { x, y } = getCanvasXY(ev);
       drawBox(dragStart, toSrc(x, y));
     }, { passive: false });
 
+    // click immer stoppen damit der Overlay-Close-Handler nicht feuert
+    tc.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); });
+
     tc.addEventListener('pointerup', async ev => {
-      if (!dragStart) return;
+      ev.stopPropagation(); // immer, auch wenn !dragStart
+      if (!dragStart) { ev.preventDefault(); return; }
       ev.preventDefault();
       const { x, y } = getCanvasXY(ev);
       const dragEnd = toSrc(x, y);
@@ -2010,7 +2372,9 @@ const OCR = (() => {
     uc.getContext('2d').drawImage(rc, 0, 0, uc.width, uc.height);
 
     const processed = _preprocessForOCR(uc);
+    const savedWords = _lastWords; // Vollbild-Positionen sichern
     const text = await recognize(processed);
+    _lastWords = savedWords; // wiederherstellen — Region-OCR darf Vollbild-Koordinaten nicht überschreiben
     return _extractNumberForField(text, fieldKey);
   }
 
