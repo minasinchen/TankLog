@@ -12,6 +12,7 @@ const App = (() => {
   let _analysePeriod = 'all';
   let _charts = {};
   let _settings = {};
+  let _session = null;
 
   // State for edit forms
   let _editFuelId = null;
@@ -21,6 +22,19 @@ const App = (() => {
   // ── Init ─────────────────────────────────────────────────────
 
   async function init() {
+    API.onUnauthorized(() => {
+      _session = null;
+      _showAuthScreen('Sitzung abgelaufen. Bitte erneut anmelden.');
+    });
+
+    _session = API.session() || await API.restoreSession();
+    if (!_session) {
+      _showAuthScreen();
+      return;
+    }
+
+    _showAppShell();
+
     // Load settings
     _settings = await DB.getSettings();
 
@@ -43,23 +57,53 @@ const App = (() => {
     // Populate dropdowns
     _populateFuelTypeDropdown('vf-fueltype');
     _populateCostCategoryDropdown('cf-category');
-
-    // Sync: restore config + auto-connect
-    const cfg = Sync.getConfig();
-    if (cfg) {
-      document.getElementById('s-couchdb-url').value = cfg.url || '';
-      document.getElementById('s-couchdb-user').value = cfg.username || '';
-      document.getElementById('s-couchdb-pass').value = cfg.password || '';
-    }
-    Sync.onRemoteChange(() => refreshCurrentView());
-    await Sync.autoConnect();
+    _renderGarageBadge();
+    _setServerModeStatus();
 
     // Settings form
     document.getElementById('set-warn-consumption').value = _settings.warnConsumption || 25;
     document.getElementById('set-remind-days').value = _settings.remindDays || 14;
 
     // Render initial view
-    await renderHome();
+    await refreshCurrentView();
+  }
+
+  function _showAuthScreen(message = 'Melde dich an, um die Garage zu laden.') {
+    const authEl = document.getElementById('auth-screen');
+    const appEl = document.getElementById('app');
+    const msgEl = document.getElementById('auth-error');
+    const subEl = document.getElementById('auth-subtitle');
+    if (authEl) authEl.style.display = 'flex';
+    if (appEl) appEl.style.display = 'none';
+    if (subEl) subEl.textContent = message;
+    if (msgEl) {
+      msgEl.style.display = 'none';
+      msgEl.textContent = '';
+    }
+  }
+
+  function _showAppShell() {
+    const authEl = document.getElementById('auth-screen');
+    const appEl = document.getElementById('app');
+    if (authEl) authEl.style.display = 'none';
+    if (appEl) appEl.style.display = 'flex';
+  }
+
+  function _renderGarageBadge() {
+    const badge = document.getElementById('header-garage-name');
+    const garageName = _session?.garage?.name || '';
+    if (!badge || !garageName) return;
+    badge.textContent = garageName;
+    badge.style.display = '';
+  }
+
+  function _setServerModeStatus() {
+    const bar = document.getElementById('sync-bar');
+    const label = document.getElementById('sync-label');
+    const dot = document.getElementById('sync-dot');
+    if (bar) bar.className = 'sync-bar sync-online';
+    if (label) label.textContent = `Garage aktiv - ${_session?.garage?.name || 'gemeinsam'}`;
+    if (dot) dot.style.background = 'currentColor';
   }
 
   // ── Vehicle management ───────────────────────────────────────
@@ -75,16 +119,31 @@ const App = (() => {
       : _vehicles.map(v =>
           `<option value="${v._id}" ${v._id === _currentVehicleId ? 'selected' : ''}>${v.name}</option>`
         ).join('');
+    _renderHeaderPlate();
   }
 
   function selectVehicle(id) {
     _currentVehicleId = id;
     localStorage.setItem('tanklog_vehicle', id);
+    _renderHeaderPlate();
     refreshCurrentView();
   }
 
   function currentVehicle() {
     return _vehicles.find(v => v._id === _currentVehicleId) || null;
+  }
+
+  function _renderHeaderPlate() {
+    const el = document.getElementById('vehicle-select-plate');
+    if (!el) return;
+    const vehicle = currentVehicle();
+    if (!vehicle) {
+      el.innerHTML = '';
+      el.style.display = 'none';
+      return;
+    }
+    el.innerHTML = _renderMiniPlate(vehicle.plate);
+    el.style.display = '';
   }
 
   // ── Navigation ───────────────────────────────────────────────
@@ -1276,7 +1335,6 @@ const App = (() => {
 
         if (data.odometer == null) {
           // Can't reliably deduplicate without odometer → treat as new
-          data._id = `fuel_${data.vehicleId}_${data.date}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
           toImport.push(data);
           continue;
         }
@@ -1284,8 +1342,7 @@ const App = (() => {
         const match = existing.find(e => e.date === data.date && e.odometer === data.odometer);
 
         if (!match) {
-          // No match on (date + odometer) → new entry, assign ID now
-          data._id = `fuel_${data.vehicleId}_${data.date}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 7)}`;
+          // No match on (date + odometer) → new entry
           toImport.push(data);
         } else {
           const litDiff  = Math.abs((match.liters     || 0) - (data.liters     || 0));
@@ -1437,6 +1494,53 @@ const App = (() => {
   }
 
   // ── PUBLIC API ───────────────────────────────────────────────
+  async function login() {
+    const email = document.getElementById('login-email')?.value.trim().toLowerCase();
+    const password = document.getElementById('login-password')?.value || '';
+    const errEl = document.getElementById('auth-error');
+
+    if (errEl) {
+      errEl.style.display = 'none';
+      errEl.textContent = '';
+    }
+
+    if (!email || !password) {
+      if (errEl) {
+        errEl.textContent = 'E-Mail und Passwort eingeben';
+        errEl.style.display = 'block';
+      }
+      return;
+    }
+
+    try {
+      await API.login(email, password);
+      document.getElementById('login-password').value = '';
+      await init();
+    } catch (error) {
+      if (errEl) {
+        errEl.textContent = error.message || 'Login fehlgeschlagen';
+        errEl.style.display = 'block';
+      }
+    }
+  }
+
+  async function logout() {
+    await API.logout();
+    _session = null;
+    _vehicles = [];
+    _currentVehicleId = null;
+    closeOverlay('overlay-settings');
+    _showAuthScreen('Du wurdest abgemeldet.');
+  }
+
+  async function toggleSync() {
+    toast('Server-Modus aktiv - separater CouchDB-Sync ist deaktiviert', 'warn');
+  }
+
+  async function syncNow() {
+    toast('Alle Daten laufen bereits direkt ueber das Backend', 'success');
+  }
+
   return {
     init, go, selectVehicle,
     openGarage, openVehicleForm, saveVehicle, deleteVehicle, selectAndEdit,
@@ -1448,7 +1552,7 @@ const App = (() => {
     switchListTab, addFromList,
     toggleSync, syncNow,
     exportJSON, importJSON, importCSV, clearAllData,
-    openSettings, saveSettings,
+    openSettings, saveSettings, login, logout,
     openOverlay, closeOverlay,
     // Vehicle DB picker
     vdbSelectBrand, vdbSelectModel, vdbSelectGeneration, vdbSelectVariant,

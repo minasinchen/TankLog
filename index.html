@@ -11,18 +11,38 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pouchdb/8.0.1/pouchdb.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="style.css?v=20260303">
 </head>
 <body>
-<div id="app">
+<div id="auth-screen" class="auth-screen">
+  <div class="auth-card">
+    <div class="auth-kicker">Gemeinsame Garage</div>
+    <div class="auth-title">TankLog Login</div>
+    <div class="auth-sub" id="auth-subtitle">Melde dich an, um die Garage zu laden.</div>
+    <div class="form-group">
+      <label>E-Mail</label>
+      <input type="email" id="login-email" placeholder="ich@example.com" autocomplete="username">
+    </div>
+    <div class="form-group">
+      <label>Passwort</label>
+      <input type="password" id="login-password" placeholder="Passwort" autocomplete="current-password">
+    </div>
+    <div id="auth-error" class="validation-msg error" style="display:none;margin-bottom:10px"></div>
+    <button class="btn btn-primary btn-full" onclick="App.login()">Anmelden</button>
+  </div>
+</div>
+
+<div id="app" style="display:none">
 
   <!-- ── HEADER ── -->
   <div id="header">
     <div id="header-left">
       <span class="logo">TANK<em>LOG</em></span>
+      <span id="header-garage-name" class="header-garage-name" style="display:none"></span>
     </div>
     <div id="header-center">
       <div class="vehicle-select-wrap" id="vehicle-select-wrap">
+        <div id="vehicle-select-plate" class="header-plate-slot" aria-hidden="true"></div>
         <select id="vehicle-select" onchange="App.selectVehicle(this.value)">
           <option value="">— Fahrzeug wählen —</option>
         </select>
@@ -586,6 +606,7 @@
         <input type="number" id="set-remind-days" placeholder="14" inputmode="numeric">
       </div>
       <button class="btn btn-primary btn-full" onclick="App.saveSettings()" style="margin-top:12px">Speichern</button>
+      <button class="btn btn-secondary btn-full" onclick="App.logout()" style="margin-top:10px">Abmelden</button>
     </div>
   </div>
 </div>
@@ -694,11 +715,12 @@
 </div>
 
 <!-- Cache-Busting für GitHub Pages / Samsung Chrome -->
-<script src="db.js?v=20260228"></script>
+<script src="api.js?v=20260303"></script>
+<script src="db.js?v=20260303"></script>
 <script src="calc.js?v=20260228"></script>
 <script src="vehicles.js?v=20260228"></script>
 <script src="ocr.js?v=20260228"></script>
 <script src="sync.js?v=20260228"></script>
-<script src="app.js?v=20260228"></script>
+<script src="app.js?v=20260303"></script>
 </body>
 </html>

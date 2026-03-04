@@ -1,0 +1,128 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum FuelType {
+  PETROL
+  DIESEL
+  HYBRID_PETROL
+  HYBRID_DIESEL
+  ELECTRIC
+  LPG
+  CNG
+  OTHER
+}
+
+model Garage {
+  id           String        @id @default(cuid())
+  name         String
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  users        User[]
+  vehicles     Vehicle[]
+  refuels      Refuel[]
+  maintenances Maintenance[]
+  costs        Cost[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  tokenVersion Int      @default(0)
+  garageId     String
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  garage       Garage   @relation(fields: [garageId], references: [id])
+
+  @@index([garageId])
+}
+
+model Vehicle {
+  id           String        @id @default(cuid())
+  garageId     String
+  name         String
+  make         String?
+  model        String?
+  variant      String?
+  year         Int?
+  plate        String?
+  fuelType     FuelType      @default(OTHER)
+  engineCode   String?
+  tireSize     String?
+  oilSpec      String?
+  notes        String?
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+  garage       Garage        @relation(fields: [garageId], references: [id])
+  refuels      Refuel[]
+  maintenances Maintenance[]
+  costs        Cost[]
+
+  @@index([garageId])
+}
+
+model Refuel {
+  id            String   @id @default(cuid())
+  garageId      String
+  vehicleId     String
+  date          DateTime
+  liters        Decimal  @db.Decimal(10, 2)
+  totalCost     Decimal  @db.Decimal(10, 2)
+  pricePerLiter Decimal? @db.Decimal(10, 3)
+  odometer      Int?
+  isPartial     Boolean  @default(false)
+  notes         String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  garage        Garage   @relation(fields: [garageId], references: [id])
+  vehicle       Vehicle  @relation(fields: [vehicleId], references: [id])
+
+  @@index([garageId])
+  @@index([vehicleId])
+}
+
+model Maintenance {
+  id          String   @id @default(cuid())
+  garageId    String
+  vehicleId   String
+  title       String
+  performedAt DateTime?
+  dueDate     DateTime?
+  dueKm       Int?
+  remindDays  Int?
+  remindKm    Int?
+  odometer    Int?
+  cost        Decimal? @db.Decimal(10, 2)
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  garage      Garage   @relation(fields: [garageId], references: [id])
+  vehicle     Vehicle  @relation(fields: [vehicleId], references: [id])
+
+  @@index([garageId])
+  @@index([vehicleId])
+}
+
+model Cost {
+  id        String   @id @default(cuid())
+  garageId  String
+  vehicleId String
+  date      DateTime
+  category  String
+  amount    Decimal  @db.Decimal(10, 2)
+  odometer  Int?
+  notes     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  garage    Garage   @relation(fields: [garageId], references: [id])
+  vehicle   Vehicle  @relation(fields: [vehicleId], references: [id])
+
+  @@index([garageId])
+  @@index([vehicleId])
+}

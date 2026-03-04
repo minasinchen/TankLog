@@ -1,98 +1,220 @@
 /**
- * DB MODULE — PouchDB abstraction for TankLog
+ * DB MODULE - Frontend data adapter backed by the API.
  *
- * Document types:
- *   vehicle     → _id: "vehicle_{uuid}"
- *   fuel        → _id: "fuel_{vehicleId}_{isoDate}_{uuid}"
- *   maintenance → _id: "maint_{vehicleId}_{uuid}"
- *   cost        → _id: "cost_{vehicleId}_{isoDate}_{uuid}"
- *   settings    → _id: "settings"
+ * Public shape stays compatible with the old app:
+ * - _id for primary keys
+ * - note / partialFill / reminderDaysBefore aliases
+ * - local-only settings remain in localStorage
  */
 
 const DB = (() => {
-  let _db = null;
+  const SETTINGS_KEY = "tanklog_settings";
 
-  function getDb() {
-    if (!_db) _db = new PouchDB('tanklog_v2');
-    return _db;
+  function _toDateOnly(value) {
+    if (!value) return null;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return null;
+    return date.toISOString().slice(0, 10);
   }
 
-  function uid() {
-    return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+  function _toNum(value) {
+    if (value === null || value === undefined || value === "") return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
   }
 
-  // ── Generic ──────────────────────────────────────────────────
-
-  async function getAll() {
-    const result = await getDb().allDocs({ include_docs: true });
-    return result.rows
-      .filter(r => !r.id.startsWith('_'))
-      .map(r => r.doc);
+  function _mapFuelTypeToApi(value) {
+    const key = String(value || "").trim();
+    const mapping = {
+      Benzin: "PETROL",
+      Diesel: "DIESEL",
+      "Hybrid (Benzin)": "HYBRID_PETROL",
+      "Hybrid (Diesel)": "HYBRID_DIESEL",
+      Elektro: "ELECTRIC",
+      "LPG / Autogas": "LPG",
+      LPG: "LPG",
+      CNG: "CNG",
+      Sonstiges: "OTHER"
+    };
+    return mapping[key] || "OTHER";
   }
 
-  async function get(id) {
-    try { return await getDb().get(id); }
-    catch(e) { return null; }
+  function _mapFuelTypeFromApi(value) {
+    const mapping = {
+      PETROL: "Benzin",
+      DIESEL: "Diesel",
+      HYBRID_PETROL: "Hybrid (Benzin)",
+      HYBRID_DIESEL: "Hybrid (Diesel)",
+      ELECTRIC: "Elektro",
+      LPG: "LPG / Autogas",
+      CNG: "CNG",
+      OTHER: "Sonstiges"
+    };
+    return mapping[value] || "Sonstiges";
   }
 
-  async function put(doc) {
-    doc.updatedAt = Date.now();
-    if (!doc._id) throw new Error('No _id');
-    const existing = await get(doc._id);
-    if (existing) doc._rev = existing._rev;
-    return getDb().put(doc);
+  function _mapVehicle(doc) {
+    return {
+      _id: doc.id,
+      name: doc.name,
+      make: doc.make || "",
+      model: doc.model || "",
+      variant: doc.variant || "",
+      year: doc.year || null,
+      plate: doc.plate || "",
+      fuelType: _mapFuelTypeFromApi(doc.fuelType),
+      engineCode: doc.engineCode || "",
+      tireSize: doc.tireSize || "",
+      oilSpec: doc.oilSpec || "",
+      note: doc.notes || "",
+      notes: doc.notes || "",
+      createdAt: doc.createdAt ? Date.parse(doc.createdAt) : Date.now(),
+      updatedAt: doc.updatedAt ? Date.parse(doc.updatedAt) : Date.now(),
+      type: "vehicle"
+    };
   }
 
-  async function remove(id) {
-    const doc = await get(id);
-    if (doc) return getDb().remove(doc);
+  function _mapRefuel(doc) {
+    return {
+      _id: doc.id,
+      vehicleId: doc.vehicleId,
+      date: _toDateOnly(doc.date),
+      liters: _toNum(doc.liters),
+      totalCost: _toNum(doc.totalCost),
+      pricePerLiter: _toNum(doc.pricePerLiter),
+      odometer: doc.odometer || null,
+      partialFill: !!doc.isPartial,
+      note: doc.notes || "",
+      createdAt: doc.createdAt ? Date.parse(doc.createdAt) : Date.now(),
+      updatedAt: doc.updatedAt ? Date.parse(doc.updatedAt) : Date.now(),
+      type: "fuel"
+    };
   }
 
-  async function clearAll() {
-    const db = getDb();
-    const all = await db.allDocs({ include_docs: true });
-    const dels = all.rows
-      .filter(r => !r.id.startsWith('_'))
-      .map(r => ({ ...r.doc, _deleted: true }));
-    if (dels.length) return db.bulkDocs(dels);
+  function _mapMaintenance(doc) {
+    return {
+      _id: doc.id,
+      vehicleId: doc.vehicleId,
+      title: doc.title,
+      date: _toDateOnly(doc.performedAt),
+      dueDate: _toDateOnly(doc.dueDate),
+      dueKm: doc.dueKm || null,
+      reminderDaysBefore: doc.remindDays || null,
+      reminderKmBefore: doc.remindKm || null,
+      odometer: doc.odometer || null,
+      cost: _toNum(doc.cost),
+      note: doc.notes || "",
+      createdAt: doc.createdAt ? Date.parse(doc.createdAt) : Date.now(),
+      updatedAt: doc.updatedAt ? Date.parse(doc.updatedAt) : Date.now(),
+      type: "maintenance"
+    };
   }
 
-  // ── Vehicles ─────────────────────────────────────────────────
+  function _mapCost(doc) {
+    return {
+      _id: doc.id,
+      vehicleId: doc.vehicleId,
+      date: _toDateOnly(doc.date),
+      category: doc.category,
+      amount: _toNum(doc.amount),
+      odometer: doc.odometer || null,
+      note: doc.notes || "",
+      createdAt: doc.createdAt ? Date.parse(doc.createdAt) : Date.now(),
+      updatedAt: doc.updatedAt ? Date.parse(doc.updatedAt) : Date.now(),
+      type: "cost"
+    };
+  }
+
+  function _vehiclePayload(v) {
+    return {
+      name: v.name,
+      make: v.make || null,
+      model: v.model || null,
+      variant: v.variant || null,
+      year: v.year || null,
+      plate: v.plate || null,
+      fuelType: _mapFuelTypeToApi(v.fuelType),
+      engineCode: v.engineCode || null,
+      tireSize: v.tireSize || null,
+      oilSpec: v.oilSpec || null,
+      notes: v.note || v.notes || null
+    };
+  }
+
+  function _refuelPayload(e) {
+    const pricePerLiter = e.liters && e.totalCost ? Number(e.totalCost) / Number(e.liters) : null;
+    return {
+      vehicleId: e.vehicleId,
+      date: e.date,
+      liters: e.liters,
+      totalCost: e.totalCost,
+      pricePerLiter,
+      odometer: e.odometer || null,
+      isPartial: !!(e.partialFill || e.isPartial),
+      notes: e.note || e.notes || null
+    };
+  }
+
+  function _maintenancePayload(m) {
+    return {
+      vehicleId: m.vehicleId,
+      title: m.title,
+      performedAt: m.date || null,
+      dueDate: m.dueDate || null,
+      dueKm: m.dueKm || null,
+      remindDays: m.reminderDaysBefore || null,
+      remindKm: m.reminderKmBefore || null,
+      odometer: m.odometer || null,
+      cost: m.cost || null,
+      notes: m.note || m.notes || null
+    };
+  }
+
+  function _costPayload(c) {
+    return {
+      vehicleId: c.vehicleId,
+      date: c.date,
+      category: c.category,
+      amount: c.amount,
+      odometer: c.odometer || null,
+      notes: c.note || c.notes || null
+    };
+  }
 
   async function getVehicles() {
-    const all = await getAll();
-    return all.filter(d => d.type === 'vehicle')
-              .sort((a, b) => a.createdAt - b.createdAt);
+    const docs = await API.request("/api/vehicles");
+    return docs.map(_mapVehicle);
   }
 
   async function saveVehicle(v) {
-    if (!v._id) {
-      v._id = 'vehicle_' + uid();
-      v.createdAt = Date.now();
-    }
-    v.type = 'vehicle';
-    return put(v);
+    const path = v._id ? `/api/vehicles/${v._id}` : "/api/vehicles";
+    const method = v._id ? "PUT" : "POST";
+    const doc = await API.request(path, {
+      method,
+      body: _vehiclePayload(v)
+    });
+    return _mapVehicle(doc);
   }
 
   async function deleteVehicle(id) {
-    // Also delete all related docs
-    const all = await getAll();
-    const related = all.filter(d =>
-      d.vehicleId === id ||
-      (d.type === 'vehicle' && d._id === id)
-    );
-    if (related.length) {
-      const dels = related.map(d => ({ ...d, _deleted: true }));
-      await getDb().bulkDocs(dels);
-    }
+    const [refuels, maintenance, costs] = await Promise.all([
+      getFuelEntries(id),
+      getMaintenances(id),
+      getCosts(id)
+    ]);
+
+    for (const entry of refuels) await deleteFuelEntry(entry._id);
+    for (const item of maintenance) await deleteMaintenance(item._id);
+    for (const item of costs) await deleteCost(item._id);
+
+    await API.request(`/api/vehicles/${id}`, { method: "DELETE" });
   }
 
-  // ── Fuel Entries ──────────────────────────────────────────────
-
   async function getFuelEntries(vehicleId) {
-    const all = await getAll();
-    return all
-      .filter(d => d.type === 'fuel' && d.vehicleId === vehicleId)
+    const query = vehicleId ? `?vehicleId=${encodeURIComponent(vehicleId)}` : "";
+    const docs = await API.request(`/api/refuels${query}`);
+    return docs
+      .map(_mapRefuel)
       .sort((a, b) => {
         const dd = a.date.localeCompare(b.date);
         return dd !== 0 ? dd : (a.odometer || 0) - (b.odometer || 0);
@@ -100,125 +222,203 @@ const DB = (() => {
   }
 
   async function saveFuelEntry(e) {
-    if (!e._id) {
-      e._id = `fuel_${e.vehicleId}_${e.date}_${uid()}`;
-      e.createdAt = Date.now();
-    }
-    e.type = 'fuel';
-    return put(e);
+    const path = e._id ? `/api/refuels/${e._id}` : "/api/refuels";
+    const method = e._id ? "PUT" : "POST";
+    const doc = await API.request(path, {
+      method,
+      body: _refuelPayload(e)
+    });
+    return _mapRefuel(doc);
   }
 
   async function deleteFuelEntry(id) {
-    return remove(id);
+    await API.request(`/api/refuels/${id}`, { method: "DELETE" });
   }
 
-  /**
-   * Find an existing fuel entry matching vehicleId + date + odometer.
-   * Returns the first match or null. Used for CSV import deduplication.
-   */
   async function findMatchingFuelEntry(vehicleId, date, odometer) {
-    if (odometer == null) return null; // odometer required for reliable matching
+    if (odometer == null) return null;
     const entries = await getFuelEntries(vehicleId);
-    return entries.find(e => e.date === date && e.odometer === odometer) || null;
+    return entries.find((entry) => entry.date === date && entry.odometer === odometer) || null;
   }
-
-  // ── Maintenance ───────────────────────────────────────────────
 
   async function getMaintenances(vehicleId) {
-    const all = await getAll();
-    return all
-      .filter(d => d.type === 'maintenance' && d.vehicleId === vehicleId)
-      .sort((a, b) => {
-        if (a.dueDate && b.dueDate) return a.dueDate.localeCompare(b.dueDate);
-        return a.createdAt - b.createdAt;
-      });
+    const query = vehicleId ? `?vehicleId=${encodeURIComponent(vehicleId)}` : "";
+    const docs = await API.request(`/api/maintenance${query}`);
+    return docs.map(_mapMaintenance);
   }
 
   async function getAllMaintenances() {
-    const all = await getAll();
-    return all.filter(d => d.type === 'maintenance');
+    const docs = await API.request("/api/maintenance");
+    return docs.map(_mapMaintenance);
   }
 
   async function saveMaintenance(m) {
-    if (!m._id) {
-      m._id = `maint_${m.vehicleId}_${uid()}`;
-      m.createdAt = Date.now();
-    }
-    m.type = 'maintenance';
-    return put(m);
+    const path = m._id ? `/api/maintenance/${m._id}` : "/api/maintenance";
+    const method = m._id ? "PUT" : "POST";
+    const doc = await API.request(path, {
+      method,
+      body: _maintenancePayload(m)
+    });
+    return _mapMaintenance(doc);
   }
 
   async function deleteMaintenance(id) {
-    return remove(id);
+    await API.request(`/api/maintenance/${id}`, { method: "DELETE" });
   }
 
-  // ── Costs ─────────────────────────────────────────────────────
-
   async function getCosts(vehicleId) {
-    const all = await getAll();
-    return all
-      .filter(d => d.type === 'cost' && d.vehicleId === vehicleId)
-      .sort((a, b) => b.date.localeCompare(a.date));
+    const query = vehicleId ? `?vehicleId=${encodeURIComponent(vehicleId)}` : "";
+    const docs = await API.request(`/api/costs${query}`);
+    return docs.map(_mapCost);
   }
 
   async function saveCost(c) {
-    if (!c._id) {
-      c._id = `cost_${c.vehicleId}_${c.date}_${uid()}`;
-      c.createdAt = Date.now();
-    }
-    c.type = 'cost';
-    return put(c);
+    const path = c._id ? `/api/costs/${c._id}` : "/api/costs";
+    const method = c._id ? "PUT" : "POST";
+    const doc = await API.request(path, {
+      method,
+      body: _costPayload(c)
+    });
+    return _mapCost(doc);
   }
 
   async function deleteCost(id) {
-    return remove(id);
+    await API.request(`/api/costs/${id}`, { method: "DELETE" });
   }
-
-  // ── Settings ──────────────────────────────────────────────────
 
   async function getSettings() {
-    const s = await get('settings');
-    return s || { _id: 'settings', type: 'settings', warnConsumption: 25, remindDays: 14 };
+    try {
+      const raw = localStorage.getItem(SETTINGS_KEY);
+      return raw ? JSON.parse(raw) : { warnConsumption: 25, remindDays: 14 };
+    } catch {
+      return { warnConsumption: 25, remindDays: 14 };
+    }
   }
 
-  async function saveSettings(s) {
-    s._id = 'settings';
-    s.type = 'settings';
-    return put(s);
+  async function saveSettings(settings) {
+    const next = {
+      warnConsumption: Number(settings.warnConsumption) || 25,
+      remindDays: Number(settings.remindDays) || 14
+    };
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+    return next;
   }
-
-  // ── Full Export / Import ──────────────────────────────────────
 
   async function exportAll() {
-    return getAll();
+    const [vehicles, refuels, maintenance, costs, settings] = await Promise.all([
+      getVehicles(),
+      getFuelEntries(""),
+      getAllMaintenances(),
+      getCosts(""),
+      getSettings()
+    ]);
+
+    return [
+      ...vehicles,
+      ...refuels,
+      ...maintenance,
+      ...costs,
+      { _id: "settings", type: "settings", ...settings }
+    ];
   }
 
-  async function importAll(docs, mode = 'merge') {
-    const db = getDb();
-    if (mode === 'replace') await clearAll();
+  async function importAll(docs, mode = "merge") {
+    if (mode === "replace") {
+      await clearAll();
+    }
 
-    const toWrite = [];
-    for (const doc of docs) {
-      if (!doc._id || doc._id.startsWith('_')) continue;
-      const existing = await get(doc._id);
-      const d = { ...doc };
-      delete d._rev;
-      if (existing) {
-        // last-write-wins by updatedAt
-        if ((d.updatedAt || 0) >= (existing.updatedAt || 0)) {
-          d._rev = existing._rev;
-          toWrite.push(d);
+    const vehicleMap = {};
+    const existingVehicles = await getVehicles();
+    for (const vehicle of existingVehicles) {
+      vehicleMap[vehicle._id] = vehicle._id;
+    }
+
+    let count = 0;
+    const sorted = [...docs].filter((doc) => doc && doc.type !== "settings");
+
+    for (const doc of sorted.filter((item) => item.type === "vehicle")) {
+      let saved;
+      if (doc._id && vehicleMap[doc._id]) {
+        saved = await saveVehicle({ ...doc, _id: vehicleMap[doc._id] });
+      } else {
+        saved = await saveVehicle(doc);
+      }
+      vehicleMap[doc._id || saved._id] = saved._id;
+      count += 1;
+    }
+
+    for (const doc of sorted.filter((item) => item.type === "fuel")) {
+      const vehicleId = vehicleMap[doc.vehicleId];
+      if (!vehicleId) continue;
+      const { _id: docId, ...payloadWithoutId } = { ...doc, vehicleId };
+      if (docId) {
+        try {
+          await saveFuelEntry({ ...payloadWithoutId, _id: docId });
+        } catch {
+          await saveFuelEntry(payloadWithoutId);
         }
       } else {
-        toWrite.push(d);
+        await saveFuelEntry(payloadWithoutId);
       }
+      count += 1;
     }
-    if (toWrite.length) await db.bulkDocs(toWrite);
-    return toWrite.length;
+
+    for (const doc of sorted.filter((item) => item.type === "maintenance")) {
+      const vehicleId = vehicleMap[doc.vehicleId];
+      if (!vehicleId) continue;
+      const { _id: docId, ...payloadWithoutId } = { ...doc, vehicleId };
+      if (docId) {
+        try {
+          await saveMaintenance({ ...payloadWithoutId, _id: docId });
+        } catch {
+          await saveMaintenance(payloadWithoutId);
+        }
+      } else {
+        await saveMaintenance(payloadWithoutId);
+      }
+      count += 1;
+    }
+
+    for (const doc of sorted.filter((item) => item.type === "cost")) {
+      const vehicleId = vehicleMap[doc.vehicleId];
+      if (!vehicleId) continue;
+      const { _id: docId, ...payloadWithoutId } = { ...doc, vehicleId };
+      if (docId) {
+        try {
+          await saveCost({ ...payloadWithoutId, _id: docId });
+        } catch {
+          await saveCost(payloadWithoutId);
+        }
+      } else {
+        await saveCost(payloadWithoutId);
+      }
+      count += 1;
+    }
+
+    const settingsDoc = docs.find((doc) => doc && doc.type === "settings");
+    if (settingsDoc) {
+      await saveSettings(settingsDoc);
+      count += 1;
+    }
+
+    return count;
+  }
+
+  async function clearAll() {
+    const [refuels, maintenance, costs, vehicles] = await Promise.all([
+      getFuelEntries(""),
+      getAllMaintenances(),
+      getCosts(""),
+      getVehicles()
+    ]);
+
+    for (const entry of refuels) await deleteFuelEntry(entry._id);
+    for (const item of maintenance) await deleteMaintenance(item._id);
+    for (const item of costs) await deleteCost(item._id);
+    for (const vehicle of vehicles) await deleteVehicle(vehicle._id);
   }
 
   return {
-    getDb,
     getVehicles, saveVehicle, deleteVehicle,
     getFuelEntries, saveFuelEntry, deleteFuelEntry, findMatchingFuelEntry,
     getMaintenances, getAllMaintenances, saveMaintenance, deleteMaintenance,
