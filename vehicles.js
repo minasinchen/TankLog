@@ -416,6 +416,15 @@ const VehicleDB = {
             { name: '2.0 TDCi 115 PS',     code: 'UFDA', fuel: 'Diesel',  oil: '5W-30', power: 115, tires: ['205/55 R16','215/50 R17'] },
             { name: '2.0 TDCi 150 PS',     code: 'XWDA', fuel: 'Diesel',  oil: '5W-30', power: 150, tires: ['215/50 R17','235/40 R18'] },
           ],
+          'Focus IV 2018–': [
+            { name: '1.0 EcoBoost 100 PS', code: 'B7DA', fuel: 'Benzin',  oil: '5W-20', power: 100, tires: ['195/65 R15','205/60 R16'] },
+            { name: '1.0 EcoBoost 125 PS', code: 'B7DB', fuel: 'Benzin',  oil: '5W-20', power: 125, tires: ['205/60 R16','215/50 R17'] },
+            { name: '1.5 EcoBoost 150 PS', code: 'B7DC', fuel: 'Benzin',  oil: '5W-20', power: 150, tires: ['215/50 R17','235/40 R18'] },
+            { name: 'ST 2.3 EcoBoost 280 PS', code: 'YVDA', fuel: 'Benzin', oil: '5W-30', power: 280, tires: ['235/40 R18','235/35 R19'] },
+            { name: '1.5 EcoBlue 95 PS',  code: 'ZTDA', fuel: 'Diesel',  oil: '0W-30', power: 95,  tires: ['195/65 R15','205/60 R16'] },
+            { name: '1.5 EcoBlue 120 PS', code: 'ZTDB', fuel: 'Diesel',  oil: '0W-30', power: 120, tires: ['205/60 R16','215/50 R17'] },
+            { name: '2.0 EcoBlue 150 PS', code: 'YUDB', fuel: 'Diesel',  oil: '0W-30', power: 150, tires: ['215/50 R17','235/40 R18'] },
+          ],
         },
         'Fiesta': {
           'Fiesta VII 2008–2017': [
@@ -424,6 +433,55 @@ const VehicleDB = {
             { name: 'ST 1.6 EcoBoost 182 PS', code: 'EBBM', fuel: 'Benzin', oil: '5W-30', power: 182, tires: ['205/40 R17'] },
             { name: '1.4 TDCi 68 PS',      code: 'KVJA', fuel: 'Diesel',  oil: '5W-30', power: 68,  tires: ['175/65 R14','185/60 R15'] },
             { name: '1.6 TDCi 90 PS',      code: 'TZJA', fuel: 'Diesel',  oil: '5W-30', power: 90,  tires: ['185/60 R15','195/50 R16'] },
+          ],
+          'Fiesta VIII 2017–2023': [
+            { name: '1.1 Ti-VCT 75 PS',     code: 'B3JA', fuel: 'Benzin',  oil: '5W-20', power: 75,  tires: ['175/65 R14','195/55 R16'] },
+            { name: '1.0 EcoBoost 95 PS',   code: 'B7JA', fuel: 'Benzin',  oil: '5W-20', power: 95,  tires: ['185/60 R15','195/55 R16'] },
+            { name: '1.0 EcoBoost 125 PS',  code: 'B7JB', fuel: 'Benzin',  oil: '5W-20', power: 125, tires: ['195/55 R16','205/45 R17'] },
+            { name: 'ST 1.5 EcoBoost 200 PS', code: 'YVJB', fuel: 'Benzin', oil: '5W-30', power: 200, tires: ['205/40 R18'] },
+            { name: '1.5 TDCi 85 PS',       code: 'XUJA', fuel: 'Diesel',  oil: '0W-30', power: 85,  tires: ['185/60 R15','195/55 R16'] },
+            { name: '1.5 TDCi 120 PS',      code: 'XUJB', fuel: 'Diesel',  oil: '0W-30', power: 120, tires: ['195/55 R16','205/45 R17'] },
+          ],
+        },
+        'Mondeo': {
+          'Mondeo Mk4 2007–2014': [
+            { name: '1.6 EcoBoost 160 PS', code: 'JQBA', fuel: 'Benzin',  oil: '5W-30', power: 160, tires: ['205/55 R16','235/45 R17'] },
+            { name: '2.0 145 PS',          code: 'AOBA', fuel: 'Benzin',  oil: '5W-30', power: 145, tires: ['205/55 R16','235/45 R17'] },
+            { name: '2.0 EcoBoost 203 PS', code: 'TNBA', fuel: 'Benzin',  oil: '5W-30', power: 203, tires: ['235/45 R17','235/40 R18'] },
+            { name: '1.8 TDCi 125 PS',     code: 'QYBA', fuel: 'Diesel',  oil: '5W-30', power: 125, tires: ['205/55 R16','235/45 R17'] },
+            { name: '2.0 TDCi 140 PS',     code: 'UFBA', fuel: 'Diesel',  oil: '5W-30', power: 140, tires: ['215/55 R16','235/45 R17'] },
+            { name: '2.2 TDCi 200 PS',     code: 'Q4BA', fuel: 'Diesel',  oil: '5W-30', power: 200, tires: ['235/45 R17','235/40 R18'] },
+          ],
+          'Mondeo Mk5 2014–2022': [
+            { name: '1.5 EcoBoost 160 PS', code: 'UNCA', fuel: 'Benzin',  oil: '5W-20', power: 160, tires: ['215/60 R16','235/50 R17'] },
+            { name: '2.0 EcoBoost 203 PS', code: 'TNCC', fuel: 'Benzin',  oil: '5W-30', power: 203, tires: ['235/50 R17','235/45 R18'] },
+            { name: '2.0 Hybrid 187 PS',   code: 'HEWA', fuel: 'Hybrid (Benzin)', oil: '0W-20', power: 187, tires: ['215/60 R16','235/50 R17'] },
+            { name: '1.5 TDCi 120 PS',     code: 'XUCC', fuel: 'Diesel',  oil: '0W-30', power: 120, tires: ['215/60 R16','235/50 R17'] },
+            { name: '2.0 TDCi 150 PS',     code: 'YUCC', fuel: 'Diesel',  oil: '0W-30', power: 150, tires: ['235/50 R17','235/45 R18'] },
+            { name: '2.0 TDCi 180 PS',     code: 'YUCD', fuel: 'Diesel',  oil: '0W-30', power: 180, tires: ['235/50 R17','235/45 R18'] },
+          ],
+        },
+        'Kuga': {
+          'Kuga II 2012–2019': [
+            { name: '1.5 EcoBoost 150 PS', code: 'M9MA', fuel: 'Benzin',  oil: '5W-20', power: 150, tires: ['235/55 R17','235/50 R18'] },
+            { name: '1.5 EcoBoost 182 PS', code: 'M9MB', fuel: 'Benzin',  oil: '5W-20', power: 182, tires: ['235/55 R17','235/50 R18'] },
+            { name: '2.0 TDCi 150 PS',     code: 'UFMA', fuel: 'Diesel',  oil: '5W-30', power: 150, tires: ['235/55 R17','235/50 R18'] },
+            { name: '2.0 TDCi 180 PS',     code: 'UFMB', fuel: 'Diesel',  oil: '5W-30', power: 180, tires: ['235/50 R18','235/45 R19'] },
+          ],
+          'Kuga III 2019–': [
+            { name: '1.5 EcoBoost 150 PS', code: 'B7MA', fuel: 'Benzin',  oil: '5W-20', power: 150, tires: ['225/65 R17','225/60 R18'] },
+            { name: '2.5 Hybrid 190 PS',   code: 'BGDA', fuel: 'Hybrid (Benzin)', oil: '0W-20', power: 190, tires: ['225/65 R17','225/60 R18'] },
+            { name: '2.5 PHEV 225 PS',     code: 'BGDB', fuel: 'Hybrid (Benzin)', oil: '0W-20', power: 225, tires: ['225/60 R18','225/55 R19'] },
+            { name: '1.5 EcoBlue 120 PS',  code: 'ZTMA', fuel: 'Diesel',  oil: '0W-30', power: 120, tires: ['225/65 R17','225/60 R18'] },
+            { name: '2.0 EcoBlue 150 PS',  code: 'YUMA', fuel: 'Diesel',  oil: '0W-30', power: 150, tires: ['225/60 R18','225/55 R19'] },
+          ],
+        },
+        'Puma': {
+          'Puma II 2019–': [
+            { name: '1.0 EcoBoost 125 PS', code: 'B7JB', fuel: 'Benzin',  oil: '5W-20', power: 125, tires: ['215/55 R17','215/50 R18'] },
+            { name: '1.0 EcoBoost MHEV 155 PS', code: 'B7JC', fuel: 'Hybrid (Benzin)', oil: '5W-20', power: 155, tires: ['215/55 R17','215/50 R18'] },
+            { name: 'ST 1.5 EcoBoost 200 PS', code: 'YVJC', fuel: 'Benzin',  oil: '5W-30', power: 200, tires: ['225/40 R19'] },
+            { name: '1.5 EcoBlue 120 PS', code: 'XUJA', fuel: 'Diesel',  oil: '0W-30', power: 120, tires: ['215/55 R17','215/50 R18'] },
           ],
         },
       },
@@ -488,6 +546,13 @@ const VehicleDB = {
             { name: 'GTi 208 PS',         code:'EP6CDT',fuel: 'Benzin',  oil: '5W-30', power: 208, tires: ['215/40 R17'] },
             { name: '1.6 BlueHDi 100 PS', code:'BHY',  fuel: 'Diesel',  oil: '5W-30', power: 100, tires: ['185/65 R15','195/55 R16'] },
           ],
+          '208 II 2019–': [
+            { name: '1.2 PureTech 75 PS', code: 'EB2FA', fuel: 'Benzin',  oil: '0W-20', power: 75,  tires: ['185/65 R15','195/55 R16'] },
+            { name: '1.2 PureTech 100 PS',code: 'EB2ADT', fuel: 'Benzin', oil: '0W-20', power: 100, tires: ['195/55 R16','205/45 R17'] },
+            { name: '1.2 PureTech 130 PS',code: 'EB2ADTS',fuel: 'Benzin', oil: '0W-20', power: 130, tires: ['205/45 R17','205/40 R18'] },
+            { name: 'e-208 136 PS',       code: 'ZK01', fuel: 'Elektro', oil: '—', power: 136, tires: ['195/55 R16','205/45 R17'] },
+            { name: '1.5 BlueHDi 100 PS', code: 'YHZ',  fuel: 'Diesel',  oil: '0W-30', power: 100, tires: ['195/55 R16','205/45 R17'] },
+          ],
         },
         '308': {
           '308 II 2013–2021': [
@@ -495,6 +560,60 @@ const VehicleDB = {
             { name: 'GTi 270 PS',          code:'EP6CDTM',fuel:'Benzin', oil: '5W-30', power: 270, tires: ['235/40 R18'] },
             { name: '1.6 BlueHDi 120 PS', code:'BHX',  fuel: 'Diesel',  oil: '5W-30', power: 120, tires: ['205/55 R16','225/45 R17'] },
             { name: '2.0 BlueHDi 150 PS', code:'DW10FC',fuel: 'Diesel',  oil: '5W-30', power: 150, tires: ['225/45 R17','225/40 R18'] },
+          ],
+          '308 III 2021–': [
+            { name: '1.2 PureTech 110 PS', code: 'EB2ADTD', fuel: 'Benzin',  oil: '0W-20', power: 110, tires: ['205/55 R16','225/45 R17'] },
+            { name: '1.2 PureTech 130 PS', code: 'EB2ADTS', fuel: 'Benzin',  oil: '0W-20', power: 130, tires: ['225/45 R17','225/40 R18'] },
+            { name: 'Hybrid 136 e-DCS6',   code: 'EB2LTEDH2', fuel: 'Hybrid (Benzin)', oil: '0W-20', power: 136, tires: ['225/45 R17','225/40 R18'] },
+            { name: 'PHEV 180 PS',          code: 'EP6FADTXHP', fuel: 'Hybrid (Benzin)', oil: '0W-20', power: 180, tires: ['225/40 R18'] },
+            { name: 'PHEV 225 PS',          code: 'EP6FADTXHP2', fuel: 'Hybrid (Benzin)', oil: '0W-20', power: 225, tires: ['225/40 R18'] },
+            { name: '1.5 BlueHDi 130 PS',   code: 'DV5RC', fuel: 'Diesel',  oil: '0W-30', power: 130, tires: ['225/45 R17','225/40 R18'] },
+          ],
+        },
+        '2008': {
+          '2008 I 2013–2019': [
+            { name: '1.2 PureTech 82 PS',  code: 'HM01', fuel: 'Benzin',  oil: '5W-30', power: 82,  tires: ['195/60 R16','205/50 R17'] },
+            { name: '1.2 PureTech 110 PS', code: 'HNZ',  fuel: 'Benzin',  oil: '5W-30', power: 110, tires: ['195/60 R16','205/50 R17'] },
+            { name: '1.6 BlueHDi 100 PS',  code: 'BHY',  fuel: 'Diesel',  oil: '5W-30', power: 100, tires: ['195/60 R16','205/50 R17'] },
+            { name: '1.6 BlueHDi 120 PS',  code: 'BHX',  fuel: 'Diesel',  oil: '5W-30', power: 120, tires: ['205/50 R17'] },
+          ],
+          '2008 II 2019–': [
+            { name: '1.2 PureTech 100 PS', code: 'EB2ADT', fuel: 'Benzin',  oil: '0W-20', power: 100, tires: ['215/65 R16','215/60 R17'] },
+            { name: '1.2 PureTech 130 PS', code: 'EB2ADTS',fuel: 'Benzin',  oil: '0W-20', power: 130, tires: ['215/60 R17','215/55 R18'] },
+            { name: '1.2 PureTech 155 PS', code: 'EB2ADTX',fuel: 'Benzin',  oil: '0W-20', power: 155, tires: ['215/55 R18'] },
+            { name: 'e-2008 136 PS',       code: 'ZK01',   fuel: 'Elektro', oil: '—', power: 136, tires: ['215/65 R16','215/60 R17'] },
+            { name: '1.5 BlueHDi 110 PS',  code: 'YHZ',    fuel: 'Diesel',  oil: '0W-30', power: 110, tires: ['215/65 R16','215/60 R17'] },
+          ],
+        },
+        '3008': {
+          '3008 I 2009–2016': [
+            { name: '1.6 THP 156 PS',     code: 'EP6CDT', fuel: 'Benzin',  oil: '5W-30', power: 156, tires: ['215/60 R16','225/50 R17'] },
+            { name: '1.6 VTi 120 PS',     code: 'EP6',    fuel: 'Benzin',  oil: '5W-30', power: 120, tires: ['215/60 R16','225/50 R17'] },
+            { name: '1.6 HDi 112 PS',     code: 'DV6C',   fuel: 'Diesel',  oil: '5W-30', power: 112, tires: ['215/60 R16','225/50 R17'] },
+            { name: '2.0 HDi 150 PS',     code: 'DW10CTED4', fuel: 'Diesel', oil: '5W-30', power: 150, tires: ['225/50 R17'] },
+          ],
+          '3008 II 2016–': [
+            { name: '1.2 PureTech 130 PS', code: 'EB2ADTS', fuel: 'Benzin',  oil: '0W-20', power: 130, tires: ['225/55 R18','235/50 R19'] },
+            { name: '1.6 THP 165 PS',      code: 'EP6FDT',  fuel: 'Benzin',  oil: '0W-30', power: 165, tires: ['225/55 R18','235/50 R19'] },
+            { name: 'Hybrid4 300 PS',      code: 'EP6FADTXHP', fuel: 'Hybrid (Benzin)', oil: '0W-20', power: 300, tires: ['235/50 R19'] },
+            { name: '1.5 BlueHDi 130 PS',  code: 'DV5RC',   fuel: 'Diesel',  oil: '0W-30', power: 130, tires: ['225/55 R18','235/50 R19'] },
+            { name: '2.0 BlueHDi 180 PS',  code: 'DW10FC',  fuel: 'Diesel',  oil: '0W-30', power: 180, tires: ['235/50 R19'] },
+          ],
+        },
+        '508': {
+          '508 I 2011–2018': [
+            { name: '1.6 THP 156 PS',     code: 'EP6CDT', fuel: 'Benzin',  oil: '5W-30', power: 156, tires: ['215/55 R17','235/45 R18'] },
+            { name: '1.6 THP 165 PS',     code: 'EP6FDT', fuel: 'Benzin',  oil: '5W-30', power: 165, tires: ['215/55 R17','235/45 R18'] },
+            { name: '1.6 HDi 115 PS',     code: 'DV6C',   fuel: 'Diesel',  oil: '5W-30', power: 115, tires: ['215/55 R17'] },
+            { name: '2.0 HDi 140 PS',     code: 'DW10',   fuel: 'Diesel',  oil: '5W-30', power: 140, tires: ['215/55 R17','235/45 R18'] },
+            { name: '2.2 HDi 204 PS GT',  code: 'DW12C',  fuel: 'Diesel',  oil: '5W-30', power: 204, tires: ['235/45 R18'] },
+          ],
+          '508 II 2018–': [
+            { name: '1.2 PureTech 130 PS', code: 'EB2ADTS', fuel: 'Benzin',  oil: '0W-20', power: 130, tires: ['215/55 R17','235/45 R18'] },
+            { name: '1.6 PureTech 180 PS', code: 'EP6FADTX', fuel: 'Benzin',  oil: '0W-20', power: 180, tires: ['235/45 R18','235/40 R19'] },
+            { name: '1.6 PHEV 225 PS',     code: 'EP6FADTXHP', fuel: 'Hybrid (Benzin)', oil: '0W-20', power: 225, tires: ['235/45 R18','235/40 R19'] },
+            { name: '1.5 BlueHDi 130 PS',  code: 'DV5RC', fuel: 'Diesel',  oil: '0W-30', power: 130, tires: ['215/55 R17','235/45 R18'] },
+            { name: '2.0 BlueHDi 160 PS',  code: 'DW10FC', fuel: 'Diesel',  oil: '0W-30', power: 160, tires: ['235/45 R18','235/40 R19'] },
           ],
         },
       },

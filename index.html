@@ -653,23 +653,38 @@
         <div class="form-row-2">
           <div class="form-group">
             <label>Datum</label>
-            <input type="date" id="ocr-r-date" class="ocr-field" onchange="OCR.recalculateFromInputs()">
+            <div class="ocr-date-split">
+              <input type="text" id="ocr-r-date-day" class="ocr-field" inputmode="numeric" maxlength="2" placeholder="TT" oninput="OCR.onDatePartsInput()">
+              <input type="text" id="ocr-r-date-month" class="ocr-field" inputmode="numeric" maxlength="2" placeholder="MM" oninput="OCR.onDatePartsInput()">
+              <input type="text" id="ocr-r-date-year" class="ocr-field" inputmode="numeric" maxlength="4" placeholder="JJJJ" oninput="OCR.onDatePartsInput()">
+              <button type="button" class="btn btn-secondary ocr-date-picker-btn" onclick="OCR.openDatePicker()" title="Datum im Kalender wählen">📅</button>
+            </div>
+            <input type="date" id="ocr-r-date" class="ocr-field ocr-date-native" onchange="OCR.onDatePickerChange()">
             <div class="ocr-hint" id="ocr-r-date-hint">⚠ Unsicher — bitte prüfen</div>
           </div>
           <div class="form-group">
-            <label>Liter</label>
+            <label class="ocr-label-lockrow">
+              <span>Liter</span>
+              <button type="button" class="ocr-lock-btn" id="ocr-lock-liters" onclick="OCR.toggleLock('liters')" title="Sperren — verhindert Überschreiben durch Gegenberechnung">🔓</button>
+            </label>
             <input type="text" id="ocr-r-liters" class="ocr-field" inputmode="decimal" oninput="OCR.recalculateFromInputs()">
             <div class="ocr-hint" id="ocr-r-liters-hint">⚠ Unsicher — bitte prüfen</div>
           </div>
         </div>
         <div class="form-row-2">
           <div class="form-group">
-            <label>Betrag €</label>
+            <label class="ocr-label-lockrow">
+              <span>Betrag €</span>
+              <button type="button" class="ocr-lock-btn" id="ocr-lock-totalCost" onclick="OCR.toggleLock('totalCost')" title="Sperren — verhindert Überschreiben durch Gegenberechnung">🔓</button>
+            </label>
             <input type="text" id="ocr-r-total" class="ocr-field" inputmode="decimal" oninput="OCR.recalculateFromInputs()">
             <div class="ocr-hint" id="ocr-r-total-hint">⚠ Unsicher — bitte prüfen</div>
           </div>
           <div class="form-group">
-            <label>€/Liter (optional)</label>
+            <label class="ocr-label-lockrow">
+              <span>€/Liter (optional)</span>
+              <button type="button" class="ocr-lock-btn" id="ocr-lock-pricePerLiter" onclick="OCR.toggleLock('pricePerLiter')" title="Sperren — verhindert Überschreiben durch Gegenberechnung">🔓</button>
+            </label>
             <input type="text" id="ocr-r-ppl" class="ocr-field" inputmode="decimal" oninput="OCR.recalculateFromInputs()">
             <div class="ocr-hint" id="ocr-r-ppl-hint">⚠ Unsicher — bitte prüfen</div>
           </div>
@@ -691,9 +706,9 @@
 <!-- Cache-Busting für GitHub Pages / Samsung Chrome -->
 <script src="api.js?v=20260303"></script>
 <script src="db.js?v=20260303"></script>
-<script src="calc.js?v=20260228"></script>
-<script src="vehicles.js?v=20260228"></script>
-<script src="ocr.js?v=20260228"></script>
-<script src="app.js?v=20260303"></script>
+<script src="calc.js?v=20260305"></script>
+<script src="vehicles.js?v=20260306"></script>
+<script src="ocr.js?v=20260333"></script>
+<script src="app.js?v=20260305"></script>
 </body>
 </html>

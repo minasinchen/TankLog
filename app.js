@@ -203,8 +203,9 @@ const App = (() => {
     const last = enriched[enriched.length - 1];
     if (last) {
       const warn = last.consumption && last.consumption > (_settings.warnConsumption || 25);
+      const lastKm = _formatOdometerLabel(last, false);
       lastEl.innerHTML = `
-        <div class="last-fuel-date">${Calc.fmtDate(last.date)} · ${last.odometer ? last.odometer.toLocaleString('de') + ' km' : '—'}</div>
+        <div class="last-fuel-date">${Calc.fmtDate(last.date)} · ${lastKm || '—'}</div>
         <div class="last-fuel-grid">
           <div class="last-fuel-item">
             <div class="last-fuel-val">${Calc.fmtNum(last.totalCost, 2)}</div>
@@ -289,6 +290,16 @@ const App = (() => {
     </div>`;
   }
 
+  function _formatOdometerLabel(entry, withDotPrefix = true) {
+    const km = entry.odometer || entry.odometerEffective;
+    if (!km) return '';
+    const prefix = withDotPrefix ? ' · ' : '';
+    const estimated = entry.odometerIsEstimated
+      ? ' <span class="km-estimate" title="km-Stand geschätzt">geschätzt</span>'
+      : '';
+    return `${prefix}${km.toLocaleString('de')} km${estimated}`;
+  }
+
   // ── LIST VIEW ───────────────────────────────────────────────
 
   async function renderList() {
@@ -326,7 +337,7 @@ const App = (() => {
     return `
       <div class="list-item" ${onclick}>
         <div class="list-item-head">
-          <div class="list-item-date">${Calc.fmtDate(e.date)}${e.odometer ? ' · ' + e.odometer.toLocaleString('de') + ' km' : ''}</div>
+          <div class="list-item-date">${Calc.fmtDate(e.date)}${_formatOdometerLabel(e, true)}</div>
           <div class="list-item-cost">${Calc.fmtNum(e.totalCost, 2)} €</div>
         </div>
         <div class="list-item-sub">
@@ -443,9 +454,10 @@ const App = (() => {
     }
     const entries = await DB.getFuelEntries(_currentVehicleId);
     const enriched = Calc.enrichFuel(entries);
-    const prev = enriched.filter(e => e.odometer && e.odometer < km).pop();
+    const prev = enriched.filter(e => (e.odometerEffective || e.odometer) && (e.odometerEffective || e.odometer) < km).pop();
     if (prev) {
-      const driven = km - prev.odometer;
+      const prevKm = prev.odometerEffective || prev.odometer;
+      const driven = km - prevKm;
       document.getElementById('cp-km').textContent = driven + ' km';
       if (liters > 0) {
         document.getElementById('cp-cons').textContent = (liters / driven * 100).toFixed(1);
@@ -454,6 +466,23 @@ const App = (() => {
       document.getElementById('cp-km').textContent = km ? '(kein Vorwert)' : '—';
       document.getElementById('cp-cons').textContent = '—';
     }
+  }
+
+  function _findFuelDuplicate(entries, candidate, excludeId = null) {
+    const TOLERANCE = 0.05;
+    return entries.find((e) => {
+      if (excludeId && e._id === excludeId) return false;
+      if (e.date !== candidate.date) return false;
+      if (!!e.partialFill !== !!candidate.partialFill) return false;
+
+      const odoA = e.odometer ?? null;
+      const odoB = candidate.odometer ?? null;
+      if (odoA !== odoB) return false;
+
+      const litDiff = Math.abs((e.liters || 0) - (candidate.liters || 0));
+      const costDiff = Math.abs((e.totalCost || 0) - (candidate.totalCost || 0));
+      return litDiff <= TOLERANCE && costDiff <= TOLERANCE;
+    }) || null;
   }
 
   async function saveFuelEntry() {
@@ -477,6 +506,16 @@ const App = (() => {
     if (!valid) {
       msgEl.className = 'validation-msg error';
       msgEl.textContent = errors.join(' · ');
+      msgEl.style.display = 'block';
+      return;
+    }
+
+    const duplicate = _findFuelDuplicate(entries, {
+      date, odometer, liters, totalCost, partialFill: partial
+    });
+    if (duplicate) {
+      msgEl.className = 'validation-msg warn';
+      msgEl.textContent = 'Duplikat erkannt: Dieser Tankvorgang ist bereits vorhanden.';
       msgEl.style.display = 'block';
       return;
     }
@@ -540,8 +579,19 @@ const App = (() => {
 
     if (!date || !liters || !totalCost) { toast('Pflichtfelder ausfüllen', 'error'); return; }
 
-    const existing = (await DB.getFuelEntries(_currentVehicleId)).find(e => e._id === id);
+    const allEntries = await DB.getFuelEntries(_currentVehicleId);
+    const existing = allEntries.find(e => e._id === id);
     if (!existing) { toast('Eintrag nicht gefunden', 'error'); return; }
+
+    const duplicate = _findFuelDuplicate(
+      allEntries,
+      { date, odometer, liters, totalCost, partialFill: partial },
+      id
+    );
+    if (duplicate) {
+      toast('Duplikat erkannt: Speichern abgebrochen', 'error');
+      return;
+    }
 
     await DB.saveFuelEntry({ ...existing, date, odometer, liters, totalCost, note, partialFill: partial });
     closeOverlay('overlay-fuel-edit');
@@ -731,6 +781,8 @@ const App = (() => {
     const factsHead = document.getElementById('analyse-facts-head');
     if (!factsEl) return;
 
+    const fmtDec = (v, d = 1) => Number(v).toFixed(d).replace('.', ',');
+
     const byMonth = {};
     entries.forEach(e => {
       const m = e.date.slice(0, 7);
@@ -751,14 +803,49 @@ const App = (() => {
     });
 
     const fmtM = m => { const [y, mo] = m.split('-'); return `${mo}/${y}`; };
+    const facts = [];
 
-    if (maxKmMonth || maxCostMonth) {
+    if (maxKmMonth) {
+      facts.push(`<div class="fact-row"><span class="fact-icon">🏆</span><span class="fact-text">Meiste Kilometer: <strong>${fmtM(maxKmMonth)}</strong> — ${Math.round(maxKm).toLocaleString('de')} km</span></div>`);
+    }
+    if (maxCostMonth) {
+      facts.push(`<div class="fact-row"><span class="fact-icon">💸</span><span class="fact-text">Teuerster Monat: <strong>${fmtM(maxCostMonth)}</strong> — ${fmtDec(maxCost, 2)} €</span></div>`);
+    }
+
+    const drivenEntries = entries.filter(e => (e.drivenKm || 0) > 0);
+    if (drivenEntries.length) {
+      const avgKmPerFill = drivenEntries.reduce((s, e) => s + (e.drivenKm || 0), 0) / drivenEntries.length;
+      const longest = drivenEntries.reduce((a, b) => (a.drivenKm > b.drivenKm ? a : b));
+      facts.push(`<div class="fact-row"><span class="fact-icon">🛣️</span><span class="fact-text">Ø Strecke pro Tankfüllung: <strong>${Math.round(avgKmPerFill).toLocaleString('de')} km</strong></span></div>`);
+      facts.push(`<div class="fact-row"><span class="fact-icon">📏</span><span class="fact-text">Längste Distanz zwischen Tankungen: <strong>${Math.round(longest.drivenKm).toLocaleString('de')} km</strong> (${Calc.fmtDate(longest.date)})</span></div>`);
+    }
+
+    const fullWithConsumption = entries.filter(e => !e.partialFill && e.consumption);
+    if (fullWithConsumption.length >= 2) {
+      const best = fullWithConsumption.reduce((a, b) => (a.consumption < b.consumption ? a : b));
+      const worst = fullWithConsumption.reduce((a, b) => (a.consumption > b.consumption ? a : b));
+      facts.push(`<div class="fact-row"><span class="fact-icon">🌿</span><span class="fact-text">Bester Verbrauch: <strong>${fmtDec(best.consumption, 1)} L/100km</strong> (${Calc.fmtDate(best.date)})</span></div>`);
+      facts.push(`<div class="fact-row"><span class="fact-icon">🔥</span><span class="fact-text">Höchster Verbrauch: <strong>${fmtDec(worst.consumption, 1)} L/100km</strong> (${Calc.fmtDate(worst.date)})</span></div>`);
+    }
+
+    const priced = entries.filter(e => e.pricePerLiter);
+    if (priced.length >= 2) {
+      const cheapest = priced.reduce((a, b) => (a.pricePerLiter < b.pricePerLiter ? a : b));
+      const expensive = priced.reduce((a, b) => (a.pricePerLiter > b.pricePerLiter ? a : b));
+      facts.push(`<div class="fact-row"><span class="fact-icon">⛽</span><span class="fact-text">Günstigster Preis: <strong>${fmtDec(cheapest.pricePerLiter, 3)} €/L</strong> (${Calc.fmtDate(cheapest.date)})</span></div>`);
+      facts.push(`<div class="fact-row"><span class="fact-icon">📈</span><span class="fact-text">Höchster Preis: <strong>${fmtDec(expensive.pricePerLiter, 3)} €/L</strong> (${Calc.fmtDate(expensive.date)})</span></div>`);
+    }
+
+    if (entries.length >= 3) {
+      const partialCount = entries.filter(e => e.partialFill).length;
+      const partialRate = partialCount / entries.length * 100;
+      facts.push(`<div class="fact-row"><span class="fact-icon">🧪</span><span class="fact-text">Teilfüllungen: <strong>${partialCount}</strong> von ${entries.length} (${fmtDec(partialRate, 0)}%)</span></div>`);
+    }
+
+    if (facts.length) {
       factsEl.style.display = '';
       if (factsHead) factsHead.style.display = '';
-      factsEl.innerHTML = `<div class="facts-list">
-        ${maxKmMonth ? `<div class="fact-row"><span class="fact-icon">🏆</span><span class="fact-text">Meiste Kilometer: <strong>${fmtM(maxKmMonth)}</strong> — ${Math.round(maxKm).toLocaleString('de')} km</span></div>` : ''}
-        ${maxCostMonth ? `<div class="fact-row"><span class="fact-icon">💸</span><span class="fact-text">Teuerster Monat: <strong>${fmtM(maxCostMonth)}</strong> — ${maxCost.toFixed(2).replace('.', ',')} €</span></div>` : ''}
-      </div>`;
+      factsEl.innerHTML = `<div class="facts-list">${facts.join('')}</div>`;
     } else {
       factsEl.style.display = 'none';
       if (factsHead) factsHead.style.display = 'none';

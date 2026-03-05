@@ -8,7 +8,8 @@ const Calc = {
 
   /**
    * Enrich sorted fuel entries with derived fields:
-   * pricePerLiter, drivenKm, consumption, costPer100km
+   * pricePerLiter, drivenKm, consumption, costPer100km,
+   * odometerEffective (with estimated gaps)
    */
   enrichFuel(entries) {
     // Must be sorted by date/odometer ascending
@@ -17,23 +18,89 @@ const Calc = {
       return dd !== 0 ? dd : (a.odometer || 0) - (b.odometer || 0);
     });
 
+    // Add runtime-only helper fields for odometer estimation.
+    for (const e of sorted) {
+      e.odometerEffective = e.odometer || null;
+      e.odometerIsEstimated = false;
+      e.odometerEstimateMethod = null;
+    }
+
+    // Average km per fill from known odometer pairs, accounting for gaps.
+    const knownIdx = [];
+    for (let i = 0; i < sorted.length; i++) {
+      if (sorted[i].odometer) knownIdx.push(i);
+    }
+    const kmPerFillSamples = [];
+    for (let i = 1; i < knownIdx.length; i++) {
+      const prevIdx = knownIdx[i - 1];
+      const nextIdx = knownIdx[i];
+      const prevKm = sorted[prevIdx].odometer;
+      const nextKm = sorted[nextIdx].odometer;
+      const fillCount = nextIdx - prevIdx;
+      if (prevKm && nextKm && nextKm > prevKm && fillCount > 0) {
+        kmPerFillSamples.push((nextKm - prevKm) / fillCount);
+      }
+    }
+    const avgKmPerFill = kmPerFillSamples.length
+      ? kmPerFillSamples.reduce((s, v) => s + v, 0) / kmPerFillSamples.length
+      : null;
+
+    // Fill missing odometers:
+    // - between two known values: linear interpolation
+    // - at the tail (newest entries): use average km per fill
+    for (let i = 0; i < sorted.length; i++) {
+      if (sorted[i].odometerEffective) continue;
+
+      let gapEnd = i;
+      while (gapEnd < sorted.length && !sorted[gapEnd].odometerEffective) gapEnd++;
+
+      const prevIdx = i - 1;
+      const hasPrev = prevIdx >= 0 && !!sorted[prevIdx].odometerEffective;
+      const hasNext = gapEnd < sorted.length && !!sorted[gapEnd].odometerEffective;
+
+      if (hasPrev && hasNext) {
+        const prevKm = sorted[prevIdx].odometerEffective;
+        const nextKm = sorted[gapEnd].odometerEffective;
+        const missingCount = gapEnd - i;
+        const step = (nextKm - prevKm) / (missingCount + 1);
+        if (step > 0) {
+          for (let k = i; k < gapEnd; k++) {
+            const n = k - i + 1;
+            sorted[k].odometerEffective = Math.round(prevKm + step * n);
+            sorted[k].odometerIsEstimated = true;
+            sorted[k].odometerEstimateMethod = 'interpolation';
+          }
+        }
+      } else if (hasPrev && !hasNext && avgKmPerFill && avgKmPerFill > 0) {
+        const prevKm = sorted[prevIdx].odometerEffective;
+        for (let k = i; k < gapEnd; k++) {
+          const n = k - i + 1;
+          sorted[k].odometerEffective = Math.round(prevKm + avgKmPerFill * n);
+          sorted[k].odometerIsEstimated = true;
+          sorted[k].odometerEstimateMethod = 'average-per-fill';
+        }
+      }
+
+      i = gapEnd - 1;
+    }
+
     for (let i = 0; i < sorted.length; i++) {
       const e = sorted[i];
       e.pricePerLiter = (e.liters > 0 && e.totalCost > 0)
         ? +((e.totalCost / e.liters).toFixed(4)) : null;
 
-      // Find previous full fill (not partial) with valid odometer
-      if (i > 0 && e.odometer) {
+      // Find previous full fill (not partial) with valid/effective odometer
+      if (i > 0 && e.odometerEffective) {
         // Walk backwards to find usable previous entry
         let prev = null;
         for (let j = i - 1; j >= 0; j--) {
-          if (sorted[j].odometer && sorted[j].odometer < e.odometer) {
+          if (sorted[j].odometerEffective && sorted[j].odometerEffective < e.odometerEffective) {
             prev = sorted[j];
             break;
           }
         }
         if (prev) {
-          const driven = e.odometer - prev.odometer;
+          const driven = e.odometerEffective - prev.odometerEffective;
           if (driven > 0) {
             e.drivenKm = driven;
             // Only calc consumption if current fill is full (not partial)
