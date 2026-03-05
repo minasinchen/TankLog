@@ -34,6 +34,8 @@ services:
       SEED_PASSWORD: ${SEED_PASSWORD}
     ports:
       - "${APP_PORT}:3000"
+    volumes:
+      - ./data:/data
 
   frontend:
     image: nginx:alpine

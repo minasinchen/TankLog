@@ -9,7 +9,9 @@
     "dev": "node --watch src/server.js",
     "prisma:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
-    "db:seed": "node prisma/seed.js"
+    "db:seed": "node prisma/seed.js",
+    "db:dump": "node prisma/dump.js",
+    "db:restore": "node prisma/restore.js"
   },
   "dependencies": {
     "@prisma/client": "^6.4.1",

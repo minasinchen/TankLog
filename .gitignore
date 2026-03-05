@@ -20,3 +20,5 @@ node_modules/
 # Python (falls mal ein lokaler Server genutzt wird)
 __pycache__/
 *.pyc
+backend/.env
+.env

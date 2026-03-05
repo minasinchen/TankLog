@@ -8,7 +8,6 @@
   <title>TankLog</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Mulish:wght@400;500;600&display=swap" rel="stylesheet">
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/pouchdb/8.0.1/pouchdb.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <link rel="stylesheet" href="style.css?v=20260303">
@@ -36,11 +35,14 @@
 
   <!-- ── HEADER ── -->
   <div id="header">
-    <div id="header-left">
+    <div class="header-top">
       <span class="logo">TANK<em>LOG</em></span>
       <span id="header-garage-name" class="header-garage-name" style="display:none"></span>
+      <button class="icon-btn" onclick="App.openGarage()" title="Garage">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+      </button>
     </div>
-    <div id="header-center">
+    <div class="header-bottom">
       <div class="vehicle-select-wrap" id="vehicle-select-wrap">
         <div id="vehicle-select-plate" class="header-plate-slot" aria-hidden="true"></div>
         <select id="vehicle-select" onchange="App.selectVehicle(this.value)">
@@ -48,14 +50,6 @@
         </select>
         <svg class="select-arrow" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>
       </div>
-    </div>
-    <div id="header-right">
-      <button class="icon-btn" onclick="App.openGarage()" title="Garage">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-      </button>
-      <button class="icon-btn" onclick="App.openSettings()" title="Einstellungen">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
-      </button>
     </div>
   </div>
 
@@ -209,44 +203,24 @@
         <div class="chart-card card"><canvas id="chart-costs" height="160"></canvas></div>
         <div class="section-head">Kosten nach Kategorie</div>
         <div id="costs-breakdown" class="card list-card"></div>
+        <div class="section-head" id="analyse-facts-head" style="display:none">Highlights</div>
+        <div id="analyse-facts" class="card" style="display:none;padding:14px;margin:0 12px"></div>
       </div>
     </div>
 
     <!-- VIEW: SYNC -->
     <div class="view" id="view-sync">
       <div class="view-scroll">
-        <div class="form-page-title">Sync / <em>Backup</em></div>
+        <div class="form-page-title">Daten & <em>Optionen</em></div>
 
-        <!-- CouchDB Sync -->
+        <!-- Einstellungen -->
         <div class="sync-section card">
           <div class="sync-section-head">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
-            <span>CouchDB / NAS Sync</span>
-            <span class="badge badge-amber" id="sync-badge">Aus</span>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></svg>
+            <span>Einstellungen & Konto</span>
           </div>
-          <div class="sync-status-row" id="sync-status-detail">
-            <span id="sync-detail-text">Nicht verbunden</span>
-          </div>
-          <div class="form-group" style="margin:12px 0 8px">
-            <label>CouchDB URL</label>
-            <input type="url" id="s-couchdb-url" placeholder="http://192.168.1.100:5984/tanklog">
-          </div>
-          <div class="form-row-2">
-            <div class="form-group">
-              <label>Benutzer</label>
-              <input type="text" id="s-couchdb-user" placeholder="admin">
-            </div>
-            <div class="form-group">
-              <label>Passwort</label>
-              <input type="password" id="s-couchdb-pass" placeholder="••••••">
-            </div>
-          </div>
-          <div class="btn-row">
-            <button class="btn btn-primary" id="sync-connect-btn" onclick="App.toggleSync()">Verbinden</button>
-            <button class="btn btn-secondary" onclick="App.syncNow()">Jetzt sync</button>
-          </div>
-          <div class="sync-info-box">
-            <strong>NAS Setup:</strong> CouchDB per Docker starten, CORS für deine IP aktivieren. Anleitung: <code>docker run -p 5984:5984 -e COUCHDB_USER=admin -e COUCHDB_PASSWORD=pass couchdb:3</code>
+          <div class="btn-row" style="flex-direction:column;gap:8px">
+            <button class="btn btn-secondary btn-full" onclick="App.openSettings()">⚙ Einstellungen öffnen</button>
           </div>
         </div>
 
@@ -317,8 +291,8 @@
       Analyse
     </button>
     <button class="nav-btn" id="nb-sync" onclick="App.go('sync')">
-      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg>
-      Sync
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>
+      Mehr
     </button>
   </nav>
 
@@ -720,7 +694,6 @@
 <script src="calc.js?v=20260228"></script>
 <script src="vehicles.js?v=20260228"></script>
 <script src="ocr.js?v=20260228"></script>
-<script src="sync.js?v=20260228"></script>
 <script src="app.js?v=20260303"></script>
 </body>
 </html>

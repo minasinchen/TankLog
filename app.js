@@ -90,11 +90,7 @@ const App = (() => {
   }
 
   function _renderGarageBadge() {
-    const badge = document.getElementById('header-garage-name');
-    const garageName = _session?.garage?.name || '';
-    if (!badge || !garageName) return;
-    badge.textContent = garageName;
-    badge.style.display = '';
+    // Garage name not shown in header — it's displayed in the sync bar
   }
 
   function _setServerModeStatus() {
@@ -102,7 +98,7 @@ const App = (() => {
     const label = document.getElementById('sync-label');
     const dot = document.getElementById('sync-dot');
     if (bar) bar.className = 'sync-bar sync-online';
-    if (label) label.textContent = `Garage aktiv - ${_session?.garage?.name || 'gemeinsam'}`;
+    if (label) label.textContent = _session?.garage?.name || 'Online';
     if (dot) dot.style.background = 'currentColor';
   }
 
@@ -602,6 +598,7 @@ const App = (() => {
 
     _renderCharts(filteredEntries, filteredCosts);
     _renderCostsBreakdown(filteredCosts);
+    _renderAnalyseFacts(filteredEntries, filteredCosts);
   }
 
   function _renderCharts(entries, costs) {
@@ -727,6 +724,45 @@ const App = (() => {
           <div class="cost-bar-track"><div class="cost-bar-fill" style="width:${pct}%"></div></div>
         </div>`;
     }).join('');
+  }
+
+  function _renderAnalyseFacts(entries, costs) {
+    const factsEl = document.getElementById('analyse-facts');
+    const factsHead = document.getElementById('analyse-facts-head');
+    if (!factsEl) return;
+
+    const byMonth = {};
+    entries.forEach(e => {
+      const m = e.date.slice(0, 7);
+      if (!byMonth[m]) byMonth[m] = { km: 0, cost: 0 };
+      byMonth[m].km += e.drivenKm || 0;
+      byMonth[m].cost += e.totalCost || 0;
+    });
+    costs.forEach(c => {
+      const m = c.date.slice(0, 7);
+      if (!byMonth[m]) byMonth[m] = { km: 0, cost: 0 };
+      byMonth[m].cost += c.amount || 0;
+    });
+
+    let maxKmMonth = null, maxKm = 0, maxCostMonth = null, maxCost = 0;
+    Object.entries(byMonth).forEach(([m, v]) => {
+      if (v.km > maxKm) { maxKm = v.km; maxKmMonth = m; }
+      if (v.cost > maxCost) { maxCost = v.cost; maxCostMonth = m; }
+    });
+
+    const fmtM = m => { const [y, mo] = m.split('-'); return `${mo}/${y}`; };
+
+    if (maxKmMonth || maxCostMonth) {
+      factsEl.style.display = '';
+      if (factsHead) factsHead.style.display = '';
+      factsEl.innerHTML = `<div class="facts-list">
+        ${maxKmMonth ? `<div class="fact-row"><span class="fact-icon">🏆</span><span class="fact-text">Meiste Kilometer: <strong>${fmtM(maxKmMonth)}</strong> — ${Math.round(maxKm).toLocaleString('de')} km</span></div>` : ''}
+        ${maxCostMonth ? `<div class="fact-row"><span class="fact-icon">💸</span><span class="fact-text">Teuerster Monat: <strong>${fmtM(maxCostMonth)}</strong> — ${maxCost.toFixed(2).replace('.', ',')} €</span></div>` : ''}
+      </div>`;
+    } else {
+      factsEl.style.display = 'none';
+      if (factsHead) factsHead.style.display = 'none';
+    }
   }
 
   function setAnalysePeriod(period, btn) {
@@ -1237,32 +1273,6 @@ const App = (() => {
     closeOverlay('overlay-cost-form');
     toast('Gelöscht', 'success');
     await refreshCurrentView();
-  }
-
-  // ── SYNC ────────────────────────────────────────────────────
-
-  async function toggleSync() {
-    if (Sync.isConnected()) {
-      Sync.disconnect();
-      toast('Verbindung getrennt', 'warn');
-    } else {
-      const url  = document.getElementById('s-couchdb-url').value.trim();
-      const user = document.getElementById('s-couchdb-user').value.trim();
-      const pass = document.getElementById('s-couchdb-pass').value;
-
-      if (!url) { toast('CouchDB URL eintragen', 'error'); return; }
-
-      toast('Verbinde…', 'warn');
-      const ok = await Sync.connect(url, user, pass);
-      if (ok) toast('Verbunden — Live-Sync aktiv ✓', 'success');
-      else    toast('Verbindung fehlgeschlagen', 'error');
-    }
-  }
-
-  async function syncNow() {
-    if (!Sync.isConnected()) { toast('Nicht verbunden', 'error'); return; }
-    const ok = await Sync.syncNow();
-    if (ok) toast('Sync abgeschlossen ✓', 'success');
   }
 
   // ── IMPORT / EXPORT ──────────────────────────────────────────

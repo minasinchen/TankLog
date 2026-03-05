@@ -1350,6 +1350,56 @@ const OCR = (() => {
       return bestD <= 48 ? best : -1;
     };
 
+    // ── Lupe (Mobilgeräte) ────────────────────────────────────────
+    const loupe = document.createElement('canvas');
+    loupe.id = 'ocr-loupe';
+    const LOUPE_SIZE = 96;
+    loupe.width  = LOUPE_SIZE;
+    loupe.height = LOUPE_SIZE;
+    loupe.style.cssText = [
+      'display:none',
+      'position:absolute',
+      'top:4px',
+      'right:4px',
+      'width:' + LOUPE_SIZE + 'px',
+      'height:' + LOUPE_SIZE + 'px',
+      'border-radius:50%',
+      'border:2px solid var(--amber)',
+      'box-shadow:0 2px 8px rgba(0,0,0,0.6)',
+      'z-index:20',
+      'pointer-events:none',
+    ].join(';');
+    wrap.appendChild(loupe);
+    const loupeCtx = loupe.getContext('2d');
+
+    const _showLoupe = (cx, cy) => {
+      if (!_srcBitmap) return;
+      const zoom = 3;
+      const srcX = (cx / _ui.scale) - (LOUPE_SIZE / 2 / zoom);
+      const srcY = (cy / _ui.scale) - (LOUPE_SIZE / 2 / zoom);
+      const srcW = LOUPE_SIZE / zoom;
+      const srcH = LOUPE_SIZE / zoom;
+      loupeCtx.clearRect(0, 0, LOUPE_SIZE, LOUPE_SIZE);
+      loupeCtx.save();
+      loupeCtx.beginPath();
+      loupeCtx.arc(LOUPE_SIZE / 2, LOUPE_SIZE / 2, LOUPE_SIZE / 2, 0, Math.PI * 2);
+      loupeCtx.clip();
+      loupeCtx.drawImage(_srcBitmap, srcX, srcY, srcW, srcH, 0, 0, LOUPE_SIZE, LOUPE_SIZE);
+      // Kreuz in der Mitte
+      loupeCtx.strokeStyle = 'rgba(255,191,0,0.9)';
+      loupeCtx.lineWidth = 1.5;
+      loupeCtx.beginPath();
+      loupeCtx.moveTo(LOUPE_SIZE / 2 - 8, LOUPE_SIZE / 2);
+      loupeCtx.lineTo(LOUPE_SIZE / 2 + 8, LOUPE_SIZE / 2);
+      loupeCtx.moveTo(LOUPE_SIZE / 2, LOUPE_SIZE / 2 - 8);
+      loupeCtx.lineTo(LOUPE_SIZE / 2, LOUPE_SIZE / 2 + 8);
+      loupeCtx.stroke();
+      loupeCtx.restore();
+      loupe.style.display = 'block';
+    };
+
+    const _hideLoupe = () => { loupe.style.display = 'none'; };
+
     const onDown = ev => {
       ev.preventDefault();
       const { x, y } = getCanvasXY(ev);
@@ -1359,6 +1409,7 @@ const OCR = (() => {
       canvas.setPointerCapture?.(ev.pointerId);
       _setPointCanvas(_activeIdx, x, y);
       _renderCrop();
+      if (ev.pointerType === 'touch') _showLoupe(x, y);
     };
     const onMove = ev => {
       if (_activeIdx < 0) return;
@@ -1366,8 +1417,15 @@ const OCR = (() => {
       const { x, y } = getCanvasXY(ev);
       _setPointCanvas(_activeIdx, x, y);
       _renderCrop();
+      if (ev.pointerType === 'touch') _showLoupe(x, y);
     };
-    const onUp = ev => { if (_activeIdx >= 0) { ev.preventDefault(); _activeIdx = -1; } };
+    const onUp = ev => {
+      if (_activeIdx >= 0) {
+        ev.preventDefault();
+        _activeIdx = -1;
+        _hideLoupe();
+      }
+    };
 
     canvas.addEventListener('pointerdown', onDown);
     canvas.addEventListener('pointermove', onMove);
@@ -1379,8 +1437,14 @@ const OCR = (() => {
         ev.preventDefault();
         _activeIdx = parseInt(h.dataset.idx, 10);
         h.setPointerCapture?.(ev.pointerId);
+        if (ev.pointerType === 'touch') {
+          const { x, y } = getCanvasXY(ev);
+          _showLoupe(x, y);
+        }
       });
-      h.addEventListener('pointermove', onMove);
+      h.addEventListener('pointermove', ev => {
+        onMove(ev);
+      });
       h.addEventListener('pointerup', onUp);
       h.addEventListener('pointercancel', onUp);
     });
@@ -1974,7 +2038,7 @@ const OCR = (() => {
 
     const tapSec = document.createElement('div');
     tapSec.id = 'ocr-tap-section';
-    tapSec.style.cssText = 'margin-top:12px;padding:10px;background:var(--bg2);border:1px solid var(--border);border-radius:10px';
+    tapSec.style.cssText = 'margin-top:12px;padding:10px;background:var(--bg2);border:1px solid var(--border);border-radius:10px;position:relative';
 
     const tapHead = document.createElement('div');
     tapHead.style.cssText = `font-family:var(--font-mono);font-size:11px;letter-spacing:1px;color:${needsTap ? 'var(--amber)' : 'var(--t3)'};text-transform:uppercase;margin-bottom:6px`;
@@ -2118,6 +2182,39 @@ const OCR = (() => {
       return { x: ev.clientX - r.left, y: ev.clientY - r.top };
     };
 
+    // ── Lupe (Touch) ──────────────────────────────────────────────
+    const TAP_LOUPE_SIZE = 96;
+    const tapLoupe = document.createElement('canvas');
+    tapLoupe.width = TAP_LOUPE_SIZE; tapLoupe.height = TAP_LOUPE_SIZE;
+    tapLoupe.style.cssText = [
+      'display:none', 'position:absolute', 'top:4px', 'right:4px',
+      'width:' + TAP_LOUPE_SIZE + 'px', 'height:' + TAP_LOUPE_SIZE + 'px',
+      'border-radius:50%', 'border:2px solid var(--amber)',
+      'box-shadow:0 2px 8px rgba(0,0,0,0.6)', 'z-index:20', 'pointer-events:none',
+    ].join(';');
+    tapSec.appendChild(tapLoupe);
+    const tapLoupeCtx = tapLoupe.getContext('2d');
+    const _showTapLoupe = (cpx, cpy) => {
+      const { sx, sy } = getScale();
+      const zoom = 3;
+      const srcX = cpx * sx - TAP_LOUPE_SIZE / 2 / zoom;
+      const srcY = cpy * sy - TAP_LOUPE_SIZE / 2 / zoom;
+      const srcW = TAP_LOUPE_SIZE / zoom, srcH = TAP_LOUPE_SIZE / zoom;
+      tapLoupeCtx.clearRect(0, 0, TAP_LOUPE_SIZE, TAP_LOUPE_SIZE);
+      tapLoupeCtx.save();
+      tapLoupeCtx.beginPath();
+      tapLoupeCtx.arc(TAP_LOUPE_SIZE / 2, TAP_LOUPE_SIZE / 2, TAP_LOUPE_SIZE / 2, 0, Math.PI * 2);
+      tapLoupeCtx.clip();
+      tapLoupeCtx.drawImage(imgSrc, srcX, srcY, srcW, srcH, 0, 0, TAP_LOUPE_SIZE, TAP_LOUPE_SIZE);
+      tapLoupeCtx.strokeStyle = 'rgba(255,191,0,0.9)'; tapLoupeCtx.lineWidth = 1.5;
+      tapLoupeCtx.beginPath();
+      tapLoupeCtx.moveTo(TAP_LOUPE_SIZE/2 - 8, TAP_LOUPE_SIZE/2); tapLoupeCtx.lineTo(TAP_LOUPE_SIZE/2 + 8, TAP_LOUPE_SIZE/2);
+      tapLoupeCtx.moveTo(TAP_LOUPE_SIZE/2, TAP_LOUPE_SIZE/2 - 8); tapLoupeCtx.lineTo(TAP_LOUPE_SIZE/2, TAP_LOUPE_SIZE/2 + 8);
+      tapLoupeCtx.stroke(); tapLoupeCtx.restore();
+      tapLoupe.style.display = 'block';
+    };
+    const _hideTapLoupe = () => { tapLoupe.style.display = 'none'; };
+
     let dragStart = null;
 
     tc.addEventListener('pointerdown', ev => {
@@ -2135,6 +2232,7 @@ const OCR = (() => {
       }
       dragStart = srcPt;
       redrawCanvas(dragStart, dragStart);
+      if (ev.pointerType === 'touch') _showTapLoupe(cpx, cpy);
     }, { passive: false });
 
     tc.addEventListener('pointermove', ev => {
@@ -2142,12 +2240,14 @@ const OCR = (() => {
       ev.preventDefault(); ev.stopPropagation();
       const { x, y } = getCanvasXY(ev);
       redrawCanvas(dragStart, toSrc(x, y));
+      if (ev.pointerType === 'touch') _showTapLoupe(x, y);
     }, { passive: false });
 
     tc.addEventListener('click', ev => { ev.stopPropagation(); ev.preventDefault(); });
 
     tc.addEventListener('pointerup', async ev => {
       ev.stopPropagation();
+      _hideTapLoupe();
       if (!dragStart) { ev.preventDefault(); return; }
       ev.preventDefault();
       const { x, y } = getCanvasXY(ev);
@@ -2195,7 +2295,7 @@ const OCR = (() => {
       }
     }, { passive: false });
 
-    tc.addEventListener('pointercancel', () => { dragStart = null; redrawCanvas(); });
+    tc.addEventListener('pointercancel', () => { dragStart = null; _hideTapLoupe(); redrawCanvas(); });
 
     tapSec.appendChild(tc);
     host.appendChild(tapSec);
