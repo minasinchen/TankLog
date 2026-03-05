@@ -4483,9 +4483,32 @@ const OCR = (() => {
             setDrawEnabled(false);
           }
         } else {
+          // Auch ohne direkt extrahierten Wert den manuell markierten Bereich
+          // als Guided-Fokus übernehmen, damit der Ausschnitt oben sichtbar ist
+          // und von dort "Neu lesen"/Alternative möglich bleibt.
+          _lastManualFrame = { key: selectedKey, bbox: manualBox };
+          _guidedState.active = true;
+          _guidedState.accepted.delete(selectedKey);
+          delete _guidedState.deferred[selectedKey];
+          _guidedState.pendingTapField = selectedKey;
+          _guidedState.justFramedField = selectedKey;
+          const curField = (_lastParsed && _lastParsed[selectedKey]) || {};
+          _guidedState.previewByField[selectedKey] = {
+            value: (curField?.value != null && typeof _fieldDef === 'function')
+              ? (_fieldDef(selectedKey)?.fmt?.(curField.value) || String(curField.value))
+              : (curField?.raw || '—'),
+            raw: curField?.raw || '',
+            isAlt: false,
+            idx: 0,
+            label: 'Eingerahmt',
+            bbox: manualBox,
+          };
+          showResult(_lastParsed || parsed);
+          requestAnimationFrame(() => {
+            document.getElementById('ocr-guided-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          });
           if (selectedKey === 'date' && _hasAnyDateParts(_dateDraftParts)) {
             statusLine.textContent = '⚠ Datum unvollständig erkannt — Tag/Monat/Jahr oben ergänzen';
-            showResult(_lastParsed || parsed);
           } else {
             statusLine.textContent = '⚠ Keine Zahl erkannt — anderen Bereich markieren';
           }
