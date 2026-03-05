@@ -13,6 +13,7 @@ const App = (() => {
   let _charts = {};
   let _settings = {};
   let _session = null;
+  let _pendingFuelListFocusId = null;
 
   // State for edit forms
   let _editFuelId = null;
@@ -34,6 +35,7 @@ const App = (() => {
     }
 
     _showAppShell();
+    _renderBuildInfo();
 
     // Load settings
     _settings = await DB.getSettings();
@@ -97,9 +99,37 @@ const App = (() => {
     const bar = document.getElementById('sync-bar');
     const label = document.getElementById('sync-label');
     const dot = document.getElementById('sync-dot');
+    const buildShort = window.__BUILD_META__?.short;
+    const suffix = buildShort ? ` (Build ${buildShort})` : '';
     if (bar) bar.className = 'sync-bar sync-online';
-    if (label) label.textContent = _session?.garage?.name || 'Online';
+    if (label) label.textContent = (_session?.garage?.name || 'Online') + suffix;
     if (dot) dot.style.background = 'currentColor';
+  }
+
+  function _renderBuildInfo() {
+    const el = document.getElementById('build-info');
+    if (!el) return;
+
+    const assets = [];
+    document.querySelectorAll('link[rel="stylesheet"][href], script[src]').forEach((node) => {
+      const src = node.getAttribute('href') || node.getAttribute('src');
+      if (!src) return;
+      let url;
+      try { url = new URL(src, location.href); } catch (_) { return; }
+      const path = (url.pathname || '').split('/').pop();
+      if (!path) return;
+      if (!/^(style\.css|api\.js|db\.js|calc\.js|vehicles\.js|ocr\.js|app\.js)$/i.test(path)) return;
+      assets.push({ path, v: url.searchParams.get('v') || '-' });
+    });
+
+    assets.sort((a, b) => a.path.localeCompare(b.path));
+    const loadedAt = new Date().toISOString().replace('T', ' ').slice(0, 19) + 'Z';
+    const lines = assets.map(a => `${a.path} v=${a.v}`);
+    const bm = window.__BUILD_META__;
+    const buildLine = bm
+      ? `Build: ${bm.full}  (short: ${bm.short})\nSource: ${bm.source}\nSource-Date: ${bm.date}`
+      : 'Build: n/a';
+    el.textContent = `${buildLine}\nLoaded: ${loadedAt}\n${lines.join('\n')}`;
   }
 
   // ── Vehicle management ───────────────────────────────────────
@@ -329,13 +359,26 @@ const App = (() => {
       return;
     }
     el.innerHTML = enriched.map(e => _fuelListItem(e, true)).join('');
+    _focusSavedFuelEntry();
+  }
+
+  function _focusSavedFuelEntry() {
+    if (!_pendingFuelListFocusId) return;
+    const id = String(_pendingFuelListFocusId);
+    _pendingFuelListFocusId = null;
+    const row = document.querySelector(`.list-item[data-fuel-id="${id}"]`);
+    if (!row) return;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.classList.add('list-item-flash');
+    window.setTimeout(() => row.classList.remove('list-item-flash'), 1800);
   }
 
   function _fuelListItem(e, clickable) {
     const warn = e.consumption && e.consumption > (_settings.warnConsumption || 25);
     const onclick = clickable ? `onclick="App.openFuelEdit('${e._id}')"` : '';
+    const fuelIdAttr = e?._id ? ` data-fuel-id="${String(e._id).replace(/"/g, '&quot;')}"` : '';
     return `
-      <div class="list-item" ${onclick}>
+      <div class="list-item"${fuelIdAttr} ${onclick}>
         <div class="list-item-head">
           <div class="list-item-date">${Calc.fmtDate(e.date)}${_formatOdometerLabel(e, true)}</div>
           <div class="list-item-cost">${Calc.fmtNum(e.totalCost, 2)} €</div>
@@ -485,6 +528,24 @@ const App = (() => {
     }) || null;
   }
 
+  function _findFuelNearDuplicateMissingOdo(entries, candidate, excludeId = null) {
+    const TOLERANCE = 0.05;
+    return entries.find((e) => {
+      if (excludeId && e._id === excludeId) return false;
+      if (e.date !== candidate.date) return false;
+      if (!!e.partialFill !== !!candidate.partialFill) return false;
+
+      const odoA = e.odometer ?? null;
+      const odoB = candidate.odometer ?? null;
+      const oneMissingOnePresent = (odoA == null) !== (odoB == null);
+      if (!oneMissingOnePresent) return false;
+
+      const litDiff = Math.abs((e.liters || 0) - (candidate.liters || 0));
+      const costDiff = Math.abs((e.totalCost || 0) - (candidate.totalCost || 0));
+      return litDiff <= TOLERANCE && costDiff <= TOLERANCE;
+    }) || null;
+  }
+
   async function saveFuelEntry() {
     if (!_currentVehicleId) { toast('Kein Fahrzeug ausgewählt', 'error'); return; }
 
@@ -520,6 +581,18 @@ const App = (() => {
       return;
     }
 
+    const nearDuplicateMissingOdo = _findFuelNearDuplicateMissingOdo(entries, {
+      date, odometer, liters, totalCost, partialFill: partial
+    });
+    if (nearDuplicateMissingOdo) {
+      msgEl.className = 'validation-msg warn';
+      msgEl.textContent =
+        `Fast-Duplikat: Datum/Liter/Betrag passen zu vorhandenem Eintrag (${nearDuplicateMissingOdo.odometer ?? 'ohne'} km). ` +
+        'Bitte vorhandenen Eintrag prüfen statt neu speichern.';
+      msgEl.style.display = 'block';
+      return;
+    }
+
     if (warnings.length) {
       msgEl.className = 'validation-msg warn';
       msgEl.textContent = '⚠ ' + warnings.join(' · ');
@@ -528,10 +601,12 @@ const App = (() => {
       msgEl.style.display = 'none';
     }
 
-    await DB.saveFuelEntry({
+    const saved = await DB.saveFuelEntry({
       vehicleId: _currentVehicleId, date, odometer, liters,
       totalCost, note, partialFill: partial
     });
+    _pendingFuelListFocusId = saved?._id || null;
+    _currentListTab = 'fuel';
 
     // Reset form
     document.getElementById('tf-liters').value = '';
@@ -590,6 +665,19 @@ const App = (() => {
     );
     if (duplicate) {
       toast('Duplikat erkannt: Speichern abgebrochen', 'error');
+      return;
+    }
+
+    const nearDuplicateMissingOdo = _findFuelNearDuplicateMissingOdo(
+      allEntries,
+      { date, odometer, liters, totalCost, partialFill: partial },
+      id
+    );
+    if (nearDuplicateMissingOdo) {
+      toast(
+        `Fast-Duplikat erkannt (${nearDuplicateMissingOdo.odometer ?? 'ohne'} km): bitte bestehenden Eintrag prüfen.`,
+        'error'
+      );
       return;
     }
 

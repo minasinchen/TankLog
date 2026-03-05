@@ -23,16 +23,20 @@ const OCR = (() => {
   let _lastParsed = null;
   let _lastWords = []; // Tesseract word-level bounding boxes für Position-Overlay
   let _lastScanImage = null; // letzter Scan-Frame als Bildquelle für Guided/Tap-Fallback
+  let _autoCornerMeta = null; // Infos zur letzten Auto-Ecken-Schätzung
   let _lockedFields = new Set(); // Felder die nicht durch Gegenberechnung überschrieben werden
   let _guidedState = {
     active: false,
     queue: [],
     index: 0,
     accepted: new Set(),
+    deferred: {},
+    history: [],
     pendingTapField: null,
     previewByField: {},
     justFramedField: null,
   };
+  let _lastManualFrame = null; // zuletzt manuell eingerahmte Box { key, bbox }
   let _dateDraftParts = { day: '', month: '', year: '' };
   let _focusTapFieldFn = null;
   let _setTapDrawEnabledFn = null;
@@ -195,6 +199,9 @@ const OCR = (() => {
     const totalKeySameLineRE =
       /(?:gesamt(?:betrag)?|bruttobetrag|endbetrag|summe|total|zu\s+zahlen|zahlbetrag|betrag)\b[^\d]{0,40}([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur|euro)?/gi;
     for (const m of flat.matchAll(totalKeySameLineRE)) {
+      const ctx = String(m[0] || '');
+      // Netto/Steuer-Kontext niemals als Gesamtbetrag übernehmen.
+      if (/\b(netto|nettobetrag|mwst|ust|umsatzsteuer|steuer)\b/i.test(ctx)) continue;
       const v = _parseMoney(m[1]);
       if (v && v > 2 && v < 1000) {
         result.totalCost = { value: v, raw: m[1], conf: 0.92 };
@@ -205,6 +212,7 @@ const OCR = (() => {
       const keyLineRE = /(gesamt(?:betrag)?|bruttobetrag|endbetrag|summe|total|zu\s+zahlen|zahlbetrag|betrag)/i;
       for (let i = 0; i < lines.length; i++) {
         if (!keyLineRE.test(lines[i])) continue;
+        if (/\b(netto|nettobetrag|mwst|ust|umsatzsteuer|steuer)\b/i.test(lines[i])) continue;
         const look = [lines[i], lines[i+1], lines[i+2], lines[i+3]].filter(Boolean).join(' ');
         const m = look.match(/([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur|euro)\b/i);
         if (m) {
@@ -218,7 +226,12 @@ const OCR = (() => {
     }
     if (!result.totalCost.value) {
       const money = [...flat.matchAll(/([0-9]{1,4}[,\.][0-9]{2})\s*(?:€|eur|euro)\b/gi)]
-        .map(m => ({ raw: m[1], value: _parseMoney(m[1]) }))
+        .map(m => {
+          const idx = m.index || 0;
+          const ctx = flat.slice(Math.max(0, idx - 24), Math.min(flat.length, idx + 24));
+          return { raw: m[1], value: _parseMoney(m[1]), ctx };
+        })
+        .filter(x => !/\b(netto|nettobetrag|mwst|ust|umsatzsteuer|steuer)\b/i.test(x.ctx || ''))
         .filter(x => x.value && x.value > 2 && x.value < 500);
       if (money.length) {
         money.sort((a,b) => b.value - a.value);
@@ -258,12 +271,95 @@ const OCR = (() => {
       }
     }
 
-    // ── PRICE PER LITER ──────────────────────────────────────────
+    // ── TOTAL CROSS-CHECKS (vorab) ───────────────────────────────
     totalFallbackCandidates = _collectTotalFallbackCandidates(lines);
+    const fuelCrossTotals = fuelProductTotals.map(c => ({
+      value: c.value,
+      raw: c.raw,
+      score: 0.96,
+      conf: 0.93,
+      contextStrength: 'fuel-product-line',
+      label: 'Kraftstoffzeile',
+    }));
+    const taxCrossTotals = _collectTaxCrossCheckTotalCandidates(lines);
+    const crossTotals = [...fuelCrossTotals, ...taxCrossTotals];
+    totalFallbackCandidates = _mergeTotalCandidates(totalFallbackCandidates, crossTotals);
+
+    const _sameMoney = (a, b, tol = 0.03) => (
+      Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) <= tol
+    );
+    const bestCrossTotal = [...crossTotals]
+      .sort((a, b) => (b.score || b.conf || 0) - (a.score || a.conf || 0))[0] || null;
+
+    if (result.totalCost.value != null) {
+      const fuelMatch = fuelCrossTotals.some(c => _sameMoney(c.value, result.totalCost.value));
+      const taxMatch = taxCrossTotals.some(c => _sameMoney(c.value, result.totalCost.value));
+      if (fuelMatch || taxMatch) {
+        const tags = [];
+        if (fuelMatch) tags.push('fuel-line');
+        if (taxMatch) tags.push('net+vat');
+        result.totalCost.crossCheck = tags.join('+');
+        result.totalCost.conf = Math.max(result.totalCost.conf || 0, (fuelMatch && taxMatch) ? 0.97 : 0.94);
+      }
+
+      const totalIsWeak = (result.totalCost.conf || 0) <= 0.60 || result.totalCost.contextStrength === 'isolated';
+      if (totalIsWeak && bestCrossTotal && !_sameMoney(bestCrossTotal.value, result.totalCost.value) && (bestCrossTotal.score || 0) >= 0.84) {
+        console.warn('OCR: Betrag per Quercheck korrigiert:', result.totalCost.value, '→', bestCrossTotal.value, `(${bestCrossTotal.label || 'cross-check'})`);
+        result.totalCost = {
+          ...result.totalCost,
+          value: bestCrossTotal.value,
+          raw: bestCrossTotal.raw || String(bestCrossTotal.value),
+          conf: Math.max(0.86, bestCrossTotal.conf || result.totalCost.conf || 0),
+          source: 'ocr',
+          contextStrength: bestCrossTotal.contextStrength || result.totalCost.contextStrength || 'label-nearby',
+          crossCheck: bestCrossTotal.label || result.totalCost.crossCheck || null,
+        };
+      }
+    } else if (bestCrossTotal && (bestCrossTotal.score || 0) >= 0.78) {
+      result.totalCost = {
+        value: bestCrossTotal.value,
+        raw: bestCrossTotal.raw || String(bestCrossTotal.value),
+        conf: Math.max(0.82, bestCrossTotal.conf || 0.82),
+        source: 'ocr',
+        contextStrength: bestCrossTotal.contextStrength || 'label-nearby',
+        crossCheck: bestCrossTotal.label || null,
+      };
+    }
+
+    if (result.totalCost.value != null && crossTotals.length) {
+      const dedup = new Map();
+      for (const alt of (result.totalCost._alts || [])) {
+        const v = Number(alt?.value);
+        if (!Number.isFinite(v)) continue;
+        dedup.set(v.toFixed(2), alt);
+      }
+      for (const c of crossTotals) {
+        if (!_sameMoney(c.value, result.totalCost.value)) {
+          const k = c.value.toFixed(2);
+          if (!dedup.has(k)) {
+            dedup.set(k, {
+              value: c.value,
+              raw: c.raw || String(c.value),
+              label: c.label || 'Quercheck',
+              contextStrength: c.contextStrength || 'context',
+            });
+          }
+        }
+      }
+      const mergedAlts = [...dedup.values()].slice(0, 4);
+      if (mergedAlts.length) result.totalCost._alts = mergedAlts;
+    }
+
+    // ── PRICE PER LITER ──────────────────────────────────────────
     const pplCandidates = [];
 
     // Stärkstes Signal: Zahl direkt vor EUR/l — z.B. "1,454 EUR/l", "1.719 EUR/1"
     for (const m of flat.matchAll(/([0-9]{1,2}[,\.][0-9]{3,4})\s*(?:€|eur|euro)?\s*\/\s*([lLiI1])\b/gi)) {
+      const v = _parsePricePerLiter(m[1]);
+      if (v && v >= 0.45 && v < 4.0) pplCandidates.push({ raw: m[1], value: v, conf: 0.88, contextStrength: 'labeled' });
+    }
+    // Auch häufig: "€ 1,668 / l"
+    for (const m of flat.matchAll(/(?:€|eur|euro)\s*([0-9]{1,2}[,\.][0-9]{3,4})\s*\/\s*([lLiI1])\b/gi)) {
       const v = _parsePricePerLiter(m[1]);
       if (v && v >= 0.45 && v < 4.0) pplCandidates.push({ raw: m[1], value: v, conf: 0.88, contextStrength: 'labeled' });
     }
@@ -944,6 +1040,7 @@ const OCR = (() => {
     const totalLabelRE = /(gesamt(?:betrag)?|bruttobetrag|endbetrag|summe|total|zu\s+zahlen|zahlbetrag)\b/i;
     const paymentRE = /(gegeben(?:\s+in)?|r\S*ckgeld|bar\b|cash\b|karte\b|ec\b|visa\b|mastercard\b|change\b)/i;
     const taxRE = /(mwst|ust|steuer|netto)\b/i;
+    const netRE = /\b(netto|nettobetrag|zwischensumme|warenwert)\b/i;
     const grossRE = /\bbrutto\b/i;
     const fuelRE = /(diesel|super\s*e?10?|e10|e5|benzin|kraftstoff|fuel|lpg|autogas|verbl)\b/i;
     const moneyRE = /([0-9]{1,4}[,\.][0-9]{2})/g;
@@ -956,6 +1053,7 @@ const OCR = (() => {
       const nearTotal = !hasTotal && totalLabelRE.test(neighborhood);
       const hasPayment = paymentRE.test(neighborhood);
       const hasTax = taxRE.test(neighborhood);
+      const hasNet = netRE.test(neighborhood);
       const hasGross = grossRE.test(line);
       const hasFuel = fuelRE.test(neighborhood);
 
@@ -980,6 +1078,13 @@ const OCR = (() => {
             if (!explicitTotalCtx) continue;
           }
         }
+
+        // Netto-/Zwischensummenwerte nicht als Gesamtbetrag verwenden,
+        // außer die Zeile ist gleichzeitig eindeutig als Gesamt/Brutto markiert.
+        if (hasNet) {
+          const explicitTotalCtx = totalLabelRE.test(line) || grossRE.test(line);
+          if (!explicitTotalCtx) continue;
+        }
         // Datumsteil dd.mm.yyyy / dd-mm-yyyy nicht als Geldwert interpretieren.
         const touchesDatePattern = (left && /[\d.\-\/]/.test(left)) || (right && /[\d.\-\/]/.test(right));
         if (touchesDatePattern) continue;
@@ -995,6 +1100,7 @@ const OCR = (() => {
         if (hasGross) score += 0.10;
         if (hasFuel) score += 0.06;
         if (hasTax) score -= 0.40;
+        if (hasNet) score -= 0.45;
         if (hasPayment) score -= 0.58;
 
         const candidate = {
@@ -1013,6 +1119,81 @@ const OCR = (() => {
     }
 
     return [...dedup.values()];
+  }
+
+  function _collectTaxCrossCheckTotalCandidates(lines) {
+    const netRE = /\b(netto|nettobetrag|zwischensumme|warenwert)\b/i;
+    const vatRE = /\b(mwst|ust|umsatzsteuer|steuer|vat)\b/i;
+    const grossRE = /\b(brutto|gesamt(?:betrag)?|endbetrag|summe|total|zu\s+zahlen|zahlbetrag)\b/i;
+    const moneyRE = /([0-9]{1,4}[,\.][0-9]{2})/g;
+
+    const net = [];
+    const vat = [];
+    const gross = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = String(lines[i] || '');
+      if (!line.trim()) continue;
+      const hasNet = netRE.test(line);
+      const hasVat = vatRE.test(line);
+      const hasGross = grossRE.test(line);
+      const hasPercent = /\b\d{1,2}(?:[,.]\d{1,2})?\s*%/.test(line);
+
+      moneyRE.lastIndex = 0;
+      for (const m of line.matchAll(moneyRE)) {
+        const v = _parseMoney(m[1]);
+        if (!v || v <= 0 || v >= 1000) continue;
+        if (hasNet) net.push({ value: v, raw: m[1], idx: i });
+        if (hasVat) vat.push({ value: v, raw: m[1], idx: i, hasPercent });
+        if (hasGross) gross.push({ value: v, raw: m[1], idx: i });
+      }
+    }
+
+    const out = [];
+    for (const n of net) {
+      if (n.value < 2 || n.value > 500) continue;
+      for (const v of vat) {
+        if (v.value < 0.1 || v.value > 120) continue;
+        if (Math.abs(n.idx - v.idx) > 3) continue;
+
+        const sum = +(n.value + v.value).toFixed(2);
+        if (sum < 2 || sum > 500) continue;
+
+        const grossMatch = gross.find(g => Math.abs(g.value - sum) <= 0.03 && Math.abs(g.idx - Math.max(n.idx, v.idx)) <= 4) || null;
+        const proximityPenalty = Math.min(0.16, Math.abs(n.idx - v.idx) * 0.04);
+        const score = Math.max(0.52, (grossMatch ? 0.92 : 0.72) + (v.hasPercent ? 0.04 : 0) - proximityPenalty);
+
+        out.push({
+          value: grossMatch ? grossMatch.value : sum,
+          raw: grossMatch ? grossMatch.raw : `${n.raw}+${v.raw}`,
+          score,
+          conf: Math.max(0.65, Math.min(0.94, score)),
+          contextStrength: grossMatch ? 'label-nearby' : 'context',
+          label: grossMatch ? 'Netto+MwSt=Gesamt' : 'Netto+MwSt (gerechnet)',
+        });
+      }
+    }
+
+    const dedup = new Map();
+    for (const c of out) {
+      const key = Number(c.value).toFixed(2);
+      const prev = dedup.get(key);
+      if (!prev || (c.score || 0) > (prev.score || 0)) dedup.set(key, c);
+    }
+    return [...dedup.values()].sort((a, b) => (b.score || 0) - (a.score || 0));
+  }
+
+  function _mergeTotalCandidates(base, extra) {
+    const merged = new Map();
+    for (const c of [...(base || []), ...(extra || [])]) {
+      if (!c || !Number.isFinite(c.value)) continue;
+      const key = Number(c.value).toFixed(2);
+      const prev = merged.get(key);
+      const cScore = (c.score ?? c.conf ?? 0);
+      const pScore = (prev?.score ?? prev?.conf ?? 0);
+      if (!prev || cScore > pScore) merged.set(key, c);
+    }
+    return [...merged.values()];
   }
 
   function _rankTotalFallbackCandidates(candidates, litersValue, pplValue) {
@@ -1315,6 +1496,7 @@ const OCR = (() => {
   // ─────────────────────────────────────────────────────────────
 
   function openOverlay() {
+    _ensureDatePartOptions();
     ['ocr-file-input','ocr-file-camera','ocr-file-gallery'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.value = '';
@@ -1323,7 +1505,8 @@ const OCR = (() => {
     _hide('ocr-result-section');
     _hide('ocr-progress-wrap');
     _show('ocr-zone', 'flex');
-    _guidedState = { active: false, queue: [], index: 0, accepted: new Set(), pendingTapField: null, previewByField: {}, justFramedField: null };
+    _guidedState = { active: false, queue: [], index: 0, accepted: new Set(), deferred: {}, history: [], pendingTapField: null, previewByField: {}, justFramedField: null };
+    _lastManualFrame = null;
     _focusTapFieldFn = null;
     _setTapDrawEnabledFn = null;
     _lastScanImage = null;
@@ -1478,7 +1661,8 @@ const OCR = (() => {
   async function handleFile(file) {
     if (!file) return;
     _lockedFields.clear();
-    _guidedState = { active: false, queue: [], index: 0, accepted: new Set(), pendingTapField: null, previewByField: {}, justFramedField: null };
+    _guidedState = { active: false, queue: [], index: 0, accepted: new Set(), deferred: {}, history: [], pendingTapField: null, previewByField: {}, justFramedField: null };
+    _lastManualFrame = null;
     _focusTapFieldFn = null;
     _setTapDrawEnabledFn = null;
     _lastScanImage = null;
@@ -1626,6 +1810,49 @@ const OCR = (() => {
     return raw.length >= 3;
   }
 
+  function _snapshotGuidedState() {
+    return {
+      parsed: _lastParsed ? JSON.parse(JSON.stringify(_lastParsed)) : null,
+      accepted: [...(_guidedState.accepted || [])],
+      deferred: JSON.parse(JSON.stringify(_guidedState.deferred || {})),
+      previewByField: JSON.parse(JSON.stringify(_guidedState.previewByField || {})),
+      lockedFields: [..._lockedFields],
+      pendingTapField: _guidedState.pendingTapField || null,
+      justFramedField: _guidedState.justFramedField || null,
+      queue: Array.isArray(_guidedState.queue) ? [..._guidedState.queue] : [],
+    };
+  }
+
+  function _pushGuidedHistory() {
+    if (!_guidedState.active) return;
+    if (!Array.isArray(_guidedState.history)) _guidedState.history = [];
+    _guidedState.history.push(_snapshotGuidedState());
+    if (_guidedState.history.length > 24) _guidedState.history.shift();
+  }
+
+  function _undoGuidedStep() {
+    const hist = _guidedState.history || [];
+    const snap = hist.pop();
+    if (!snap) return;
+    if (snap.parsed) {
+      _lastParsed = JSON.parse(JSON.stringify(snap.parsed));
+      window.__OCR_LAST_PARSED__ = _lastParsed;
+    }
+    _guidedState.accepted = new Set(snap.accepted || []);
+    _guidedState.deferred = snap.deferred || {};
+    _guidedState.previewByField = snap.previewByField || {};
+    _lockedFields = new Set(snap.lockedFields || []);
+    ['liters', 'totalCost', 'pricePerLiter'].forEach((k) => {
+      const btn = document.getElementById('ocr-lock-' + k);
+      if (btn) _updateLockBtn(btn, _lockedFields.has(k));
+    });
+    _guidedState.pendingTapField = snap.pendingTapField || null;
+    _guidedState.justFramedField = snap.justFramedField || null;
+    _guidedState.queue = snap.queue || [];
+    _guidedState.active = true;
+    showResult(_lastParsed);
+  }
+
   function _ensureGuidedSection(parsed) {
     const host = document.getElementById('ocr-result-section');
     if (!host) return;
@@ -1639,11 +1866,19 @@ const OCR = (() => {
         queue,
         index: 0,
         accepted: new Set(),
+        deferred: {},
+        history: [],
         pendingTapField: null,
         previewByField: {},
         justFramedField: null,
       };
     }
+
+    // Beim Neu-Rendern ohne explizite Bestätigung/Überspringen auf dem aktuell
+    // geprüften Feld bleiben, damit "Neu lesen", "Nächste Fundstelle" usw.
+    // nicht unerwartet zum nächsten Guided-Schritt springen.
+    const previouslyFocusedKey = _guidedState.queue?.[0] || null;
+    const hadPendingTapField = !!_guidedState.pendingTapField;
 
     // Reihenfolge dynamisch pro Schritt neu bestimmen:
     // Datum zuerst, danach jeweils der sicherste verbleibende Kandidat.
@@ -1651,16 +1886,48 @@ const OCR = (() => {
 
     // Wenn gerade ein Feld per "Selbst einrahmen" gelesen wurde, dieses Feld
     // sofort erneut im Guided-Dialog zur Bestätigung zeigen (nicht von Reordering verdrängen lassen).
+    // Wichtig: auch dann erzwingen, wenn der Parser den Wert noch nicht sicher
+    // dem Feld zuordnen konnte.
     if (_guidedState.pendingTapField) {
       const framedKey = _guidedState.pendingTapField;
-      const framedField = parsed?.[framedKey];
-      if (framedField?.value != null) {
-        _guidedState.accepted.delete(framedKey);
-        if (!_guidedState.queue.includes(framedKey)) _guidedState.queue.unshift(framedKey);
-        else _guidedState.queue = [framedKey, ..._guidedState.queue.filter(k => k !== framedKey)];
-        _guidedState.pendingTapField = null;
-        _guidedState.justFramedField = framedKey;
-      }
+      _guidedState.accepted.delete(framedKey);
+      delete _guidedState.deferred[framedKey];
+      if (!_guidedState.queue.includes(framedKey)) _guidedState.queue.unshift(framedKey);
+      else _guidedState.queue = [framedKey, ..._guidedState.queue.filter(k => k !== framedKey)];
+      _guidedState.pendingTapField = null;
+      _guidedState.justFramedField = framedKey;
+    }
+    if (
+      !hadPendingTapField &&
+      !_guidedState.pendingTapField &&
+      previouslyFocusedKey &&
+      !_guidedState.accepted.has(previouslyFocusedKey) &&
+      _guidedState.queue.includes(previouslyFocusedKey)
+    ) {
+      _guidedState.queue = [
+        previouslyFocusedKey,
+        ..._guidedState.queue.filter(k => k !== previouslyFocusedKey),
+      ];
+    }
+
+    // Übersprungene Felder wieder aktivieren, wenn sich die Datenlage verbessert hat.
+    const statusRank = { missing: 0, conflicting: 1, uncertain: 2, derived: 3, safe: 4 };
+    for (const [k, snap] of Object.entries(_guidedState.deferred || {})) {
+      if (!_guidedState.accepted.has(k)) { delete _guidedState.deferred[k]; continue; }
+      const now = parsed?.[k] || {};
+      const hadValue = snap?.value != null;
+      const hasValue = now?.value != null;
+      const prevSt = statusRank[snap?.status || 'missing'] || 0;
+      const nowSt = statusRank[now?.status || (hasValue ? 'uncertain' : 'missing')] || 0;
+      const confGain = (Number(now?.conf || 0) - Number(snap?.conf || 0));
+      const valueChanged = hadValue && hasValue && Math.abs(Number(now.value) - Number(snap.value)) > 0.005;
+      const improved = (!hadValue && hasValue) || (nowSt > prevSt) || confGain >= 0.08 || valueChanged;
+      if (!improved) continue;
+      _guidedState.accepted.delete(k);
+      delete _guidedState.deferred[k];
+      if (_guidedState.queue.includes(k)) _guidedState.queue = [k, ..._guidedState.queue.filter(x => x !== k)];
+      else _guidedState.queue.unshift(k);
+      break;
     }
     _guidedState.index = 0;
 
@@ -1676,6 +1943,11 @@ const OCR = (() => {
     const field = parsed?.[key] || {};
     const valueText = (field.value != null) ? def.fmt(field.value) : '—';
     const isMissing = field.value == null || field.status === 'missing';
+    const isDerivedValue = !isMissing && (
+      field.status === 'derived' ||
+      field.source === 'derived' ||
+      field.contextStrength === 'derived'
+    );
     const derivedCandidate = _guidedDerivedCandidate(parsed, key);
 
     // Falls pendingTapField hier noch übrig ist und zufällig das aktuelle Feld trifft:
@@ -1692,15 +1964,35 @@ const OCR = (() => {
     const head = document.createElement('div');
     head.className = 'ocr-guided-head';
     const totalSteps = _guidedState.accepted.size + _guidedState.queue.length;
-    head.textContent = `Geführte Prüfung ${_guidedState.accepted.size + 1}/${Math.max(1, totalSteps)}`;
+    head.style.display = 'flex';
+    head.style.alignItems = 'center';
+    head.style.justifyContent = 'space-between';
+    head.style.gap = '8px';
+    const headTxt = document.createElement('span');
+    headTxt.textContent = `Geführte Prüfung ${_guidedState.accepted.size + 1}/${Math.max(1, totalSteps)}`;
+    const undoMini = document.createElement('button');
+    undoMini.type = 'button';
+    undoMini.textContent = '↶ Zurück';
+    undoMini.className = 'btn btn-secondary';
+    undoMini.style.cssText = 'padding:2px 8px;min-height:24px;line-height:1;font-size:10px;flex:0 0 auto';
+    const hasHistory = Array.isArray(_guidedState.history) && _guidedState.history.length > 0;
+    if (!hasHistory) undoMini.disabled = true;
+    undoMini.onclick = () => _undoGuidedStep();
+    head.append(headTxt, undoMini);
     wrap.appendChild(head);
 
     const question = document.createElement('div');
     question.className = 'ocr-guided-q';
-    question.textContent = isMissing
-      ? `${def.label} wurde nicht sicher erkannt. Bitte einrahmen oder Alternative wählen.`
-      : `Ist das der richtige Wert für ${def.label}?`;
+    question.innerHTML = isMissing
+      ? `<span class="ocr-guided-q-label" style="color:var(--amber);font-weight:700">${def.label}</span> wurde nicht sicher erkannt. Bitte einrahmen oder Alternative wählen.`
+      : `Ist das der richtige Wert für <span class="ocr-guided-q-label" style="color:var(--amber);font-weight:700">${def.label}</span>?`;
     wrap.appendChild(question);
+    if (isDerivedValue) {
+      const mini = document.createElement('div');
+      mini.className = 'ocr-guided-mini';
+      mini.textContent = 'Hinweis: Dieser Wert wurde berechnet.';
+      wrap.appendChild(mini);
+    }
 
     const mkBtn = (txt, cls = 'btn btn-secondary') => {
       const b = document.createElement('button');
@@ -1718,6 +2010,7 @@ const OCR = (() => {
       isAlt: false,
       idx: 0,
       label: null,
+      bbox: null,
     };
 
     const value = document.createElement('div');
@@ -1728,8 +2021,36 @@ const OCR = (() => {
     // Gefundene OCR-Stelle vergrößert zeigen; bei mehrfachen Treffern durchblätterbar.
     const rawForBbox = activeCandidate.raw || valueText;
     const canFindBbox = _isMeaningfulBboxCandidate(key, rawForBbox);
+    const rememberedManualBox = (_lastManualFrame && _lastManualFrame.key === key) ? _lastManualFrame.bbox : null;
+    const manualBox = activeCandidate?.bbox || rememberedManualBox || null;
     let boxes = canFindBbox ? _findAllValueBboxes(rawForBbox) : [];
+    let usedAltOcrBox = false;
+    if (!boxes.length && isDerivedValue && Array.isArray(alts) && alts.length) {
+      for (const alt of alts) {
+        const altRaw = String(alt?.raw || '').trim();
+        if (!altRaw) continue;
+        if (alt?.contextStrength === 'derived' || alt?.contextStrength === 'manual') continue;
+        const altBoxes = _findAllValueBboxes(altRaw);
+        if (!altBoxes.length) continue;
+        boxes = altBoxes;
+        usedAltOcrBox = true;
+        break;
+      }
+    }
+    if (manualBox) {
+      const keyOf = (b) => `${Math.round(b.x0)}|${Math.round(b.y0)}|${Math.round(b.x1)}|${Math.round(b.y1)}`;
+      const seen = new Set([keyOf(manualBox)]);
+      const merged = [manualBox];
+      for (const b of boxes) {
+        const k = keyOf(b);
+        if (seen.has(k)) continue;
+        seen.add(k);
+        merged.push(b);
+      }
+      boxes = merged;
+    }
     let usedContextBox = false;
+    let usedFallbackBox = false;
     if (!boxes.length) {
       const ctxBox = _findFieldContextBbox(key);
       if (ctxBox) {
@@ -1737,12 +2058,26 @@ const OCR = (() => {
         usedContextBox = true;
       }
     }
+    const src = _lastWarped || (_srcBitmap ? _bitmapToCanvas(_srcBitmap) : null) || _lastScanImage;
+    if (!boxes.length && src) {
+      // Letzter Fallback: schätzbarer Lesebereich statt komplett ohne Vorschau/Neu-Lesen.
+      const xPad = Math.round(src.width * 0.08);
+      const yTop = key === 'date' ? Math.round(src.height * 0.04) : Math.round(src.height * 0.16);
+      const yBot = key === 'date' ? Math.round(src.height * 0.28) : Math.round(src.height * 0.90);
+      boxes = [{
+        x0: Math.max(0, xPad),
+        y0: Math.max(0, yTop),
+        x1: Math.min(src.width - 1, src.width - xPad),
+        y1: Math.min(src.height - 1, yBot),
+      }];
+      usedFallbackBox = true;
+    }
     const boxIdx = boxes.length ? Math.max(0, Math.min(activeCandidate.idx || 0, boxes.length - 1)) : 0;
+    const usingManualBox = !!manualBox && boxIdx === 0;
     if (activeCandidate.idx !== boxIdx) {
       _guidedState.previewByField[key] = { ...activeCandidate, idx: boxIdx };
     }
     const bbox = boxes[boxIdx] || null;
-    const src = _lastWarped || (_srcBitmap ? _bitmapToCanvas(_srcBitmap) : null) || _lastScanImage;
     if (bbox && src) {
       let previewBox = bbox;
       if (key === 'totalCost') {
@@ -1773,10 +2108,16 @@ const OCR = (() => {
       const zoomLbl = document.createElement('div');
       zoomLbl.className = 'ocr-guided-zoom-lbl';
       zoomLbl.textContent = boxes.length > 1
-        ? `Fundstelle ${boxIdx + 1}/${boxes.length}${key === 'totalCost' ? ' (Zeile)' : ''}`
+        ? `${usingManualBox ? 'Eingerahmte Stelle' : usedAltOcrBox ? `OCR-Fundstelle ${boxIdx + 1}/${boxes.length}` : `Fundstelle ${boxIdx + 1}/${boxes.length}`}${key === 'totalCost' ? ' (Zeile)' : ''}`
         : (
-            usedContextBox
+            usingManualBox
+              ? 'Eingerahmte Stelle'
+              : usedAltOcrBox
+              ? 'OCR-Fundstelle'
+              : usedContextBox
               ? 'Fundstelle (Kontext)'
+              : usedFallbackBox
+              ? 'Schätzbereich'
               : (key === 'totalCost' ? 'Fundstelle (Zeile)' : 'Fundstelle')
           );
       wrap.appendChild(zoomLbl);
@@ -1814,6 +2155,7 @@ const OCR = (() => {
               isAlt: true,
               idx: boxIdx,
               label: 'Neu gelesen',
+              bbox: previewBox || bbox || activeCandidate?.bbox || null,
             };
           }
           rereadBtn.textContent = oldTxt;
@@ -1840,6 +2182,15 @@ const OCR = (() => {
 
     const commitChosenValue = (chosenValue) => {
       if (!chosenValue) return;
+      _pushGuidedHistory();
+      // Bei bestätigten Rechenfeldern zuerst sperren, damit _validateFinalize
+      // den soeben bestätigten Wert nicht direkt wieder überschreibt.
+      const isLockable = (key === 'liters' || key === 'totalCost' || key === 'pricePerLiter');
+      if (isLockable) {
+        _lockedFields.add(key);
+        const lockBtnPre = document.getElementById('ocr-lock-' + key);
+        if (lockBtnPre) _updateLockBtn(lockBtnPre, true);
+      }
       const el = document.getElementById(def.id);
       if (el) el.value = chosenValue;
       const merged = _mergeParsedWithInputs({ [key]: chosenValue });
@@ -1848,6 +2199,7 @@ const OCR = (() => {
       _lastParsed = merged;
       window.__OCR_LAST_PARSED__ = merged;
       _guidedState.accepted.add(key);
+      delete _guidedState.deferred[key];
       delete _guidedState.previewByField[key];
       showResult(merged);
     };
@@ -1865,6 +2217,7 @@ const OCR = (() => {
         commitChosenValue(activeCandidate.value);
         return;
       }
+      _pushGuidedHistory();
       _guidedState.accepted.add(key);
       showResult(_lastParsed || parsed);
     };
@@ -1872,7 +2225,13 @@ const OCR = (() => {
 
     const skipBtn = mkBtn('Überspringen');
     skipBtn.onclick = () => {
+      _pushGuidedHistory();
       _guidedState.accepted.add(key);
+      _guidedState.deferred[key] = {
+        value: field?.value ?? null,
+        status: field?.status || (field?.value != null ? 'uncertain' : 'missing'),
+        conf: Number(field?.conf || 0),
+      };
       showResult(_lastParsed || parsed);
     };
     btnRow.appendChild(skipBtn);
@@ -1913,6 +2272,8 @@ const OCR = (() => {
       _guidedState.queue = [];
       _guidedState.index = 0;
       _guidedState.accepted = new Set();
+      _guidedState.deferred = {};
+      _guidedState.history = [];
       _guidedState.pendingTapField = null;
       _guidedState.previewByField = {};
       _guidedState.justFramedField = null;
@@ -1937,12 +2298,14 @@ const OCR = (() => {
         if (isSelectedAlt) b.classList.add('active');
         b.onclick = () => {
           const raw = alt?.raw || v;
+          const prev = _guidedState.previewByField[key] || activeCandidate;
           _guidedState.previewByField[key] = {
             value: v,
             raw,
             isAlt: true,
             idx: 0,
             label: alt?.label || `Alternative ${idx + 1}`,
+            bbox: prev?.bbox || null,
           };
           showResult(_lastParsed || parsed);
         };
@@ -2049,6 +2412,38 @@ const OCR = (() => {
     return String(v || '').replace(/\D+/g, '').slice(0, maxLen);
   }
 
+  function _pad2(v) {
+    const n = _normDatePart(v, 2);
+    if (!n) return '';
+    return String(Number(n)).padStart(2, '0');
+  }
+
+  function _ensureDatePartOptions() {
+    const dayEl = document.getElementById('ocr-r-date-day');
+    const monEl = document.getElementById('ocr-r-date-month');
+    const yearEl = document.getElementById('ocr-r-date-year');
+    if (!dayEl || !monEl || !yearEl) return;
+
+    const fill = (el, from, to, pad = 2, desc = false) => {
+      if (el.dataset.filled === '1') return;
+      const current = String(el.value || '');
+      for (let i = from; desc ? i >= to : i <= to; desc ? i-- : i++) {
+        const v = String(i).padStart(pad, '0');
+        const opt = document.createElement('option');
+        opt.value = v;
+        opt.textContent = v;
+        el.appendChild(opt);
+      }
+      if (current) el.value = current;
+      el.dataset.filled = '1';
+    };
+
+    fill(dayEl, 1, 31, 2, false);
+    fill(monEl, 1, 12, 2, false);
+    const yNow = new Date().getFullYear();
+    fill(yearEl, yNow + 1, 1990, 4, true);
+  }
+
   function _extractDatePartsFromText(text) {
     const t = _normalizeOCRText(String(text || ''));
     // yyyy-mm-dd
@@ -2104,8 +2499,8 @@ const OCR = (() => {
 
   function _writeDatePartsToInputs(parts, onlyEmpty = false) {
     const map = [
-      ['ocr-r-date-day', _normDatePart(parts?.day, 2)],
-      ['ocr-r-date-month', _normDatePart(parts?.month, 2)],
+      ['ocr-r-date-day', _pad2(parts?.day)],
+      ['ocr-r-date-month', _pad2(parts?.month)],
       ['ocr-r-date-year', _normDatePart(parts?.year, 4)],
     ];
     for (const [id, v] of map) {
@@ -2348,7 +2743,7 @@ const OCR = (() => {
     previewEl.id = 'ocr-warp-preview';
     previewEl.style.cssText = 'display:none;margin-top:10px';
     previewEl.innerHTML = `
-      <div style="font-family:var(--font-mono);font-size:11px;color:var(--t3);margin-bottom:6px">
+      <div id="ocr-warp-msg" style="font-family:var(--font-mono);font-size:11px;color:var(--t3);margin-bottom:6px">
         Begradigt — sieht das gut aus?
       </div>
       <canvas id="ocr-warp-canvas"
@@ -2659,24 +3054,128 @@ const OCR = (() => {
         if (v > maxVar) { maxVar = v; otsuT = t; }
       }
 
-      // ── Begrenzungsrahmen aller hellen (Beleg-)Pixel ────────────
+      // ── Helle Pixelmaske + größte zusammenhängende Region ────────
       // Ignoriere äußersten 3%-Rand um Überbelichtungsartefakte zu vermeiden
       const marginX = Math.round(cw * 0.03), marginY = Math.round(ch * 0.03);
-      let rMin = ch, rMax = 0, cMin = cw, cMax = 0, brightCount = 0;
+      const brightT = Math.max(130, Math.min(245, otsuT + 10));
+      const mask = new Uint8Array(n);
       for (let y = marginY; y < ch - marginY; y++) {
+        const row = y * cw;
         for (let x = marginX; x < cw - marginX; x++) {
-          if (gray[y * cw + x] >= otsuT) {
-            if (y < rMin) rMin = y; if (y > rMax) rMax = y;
-            if (x < cMin) cMin = x; if (x > cMax) cMax = x;
+          if (gray[row + x] >= brightT) mask[row + x] = 1;
+        }
+      }
+
+      // Despeckle: Einzelpunkte und sehr kleine Störpixel aussortieren
+      const filtered = new Uint8Array(n);
+      let brightCount = 0;
+      for (let y = marginY + 1; y < ch - marginY - 1; y++) {
+        for (let x = marginX + 1; x < cw - marginX - 1; x++) {
+          const i = y * cw + x;
+          if (!mask[i]) continue;
+          const neighbors =
+            mask[i - cw - 1] + mask[i - cw] + mask[i - cw + 1] +
+            mask[i - 1]                 + mask[i + 1] +
+            mask[i + cw - 1] + mask[i + cw] + mask[i + cw + 1];
+          if (neighbors >= 2) {
+            filtered[i] = 1;
             brightCount++;
           }
         }
       }
 
-      // Fallback auf Gesamtbild wenn keine helle Region gefunden
-      if (rMax <= rMin || cMax <= cMin || brightCount < n * 0.05) {
+      let rMin = ch, rMax = 0, cMin = cw, cMax = 0;
+      let bestCorners = null;
+      let fillRatio = 0;
+      const minComponentArea = Math.max(120, Math.round((cw * ch) * 0.015));
+      const visited = new Uint8Array(n);
+      const q = new Int32Array(n);
+      let bestScore = -1;
+
+      for (let y = marginY + 1; y < ch - marginY - 1; y++) {
+        for (let x = marginX + 1; x < cw - marginX - 1; x++) {
+          const start = y * cw + x;
+          if (!filtered[start] || visited[start]) continue;
+
+          let head = 0, tail = 0;
+          q[tail++] = start;
+          visited[start] = 1;
+
+          let area = 0;
+          let yMin = ch, yMax = 0, xMin = cw, xMax = 0;
+          let tl = { x: 0, y: 0, s: Infinity };
+          let tr = { x: 0, y: 0, d: -Infinity };
+          let br = { x: 0, y: 0, s: -Infinity };
+          let bl = { x: 0, y: 0, d: Infinity };
+
+          while (head < tail) {
+            const idx = q[head++];
+            const yy = (idx / cw) | 0;
+            const xx = idx - yy * cw;
+            area++;
+
+            const sxy = xx + yy;
+            const dxy = xx - yy;
+            if (sxy < tl.s) tl = { x: xx, y: yy, s: sxy };
+            if (dxy > tr.d) tr = { x: xx, y: yy, d: dxy };
+            if (sxy > br.s) br = { x: xx, y: yy, s: sxy };
+            if (dxy < bl.d) bl = { x: xx, y: yy, d: dxy };
+
+            if (yy < yMin) yMin = yy;
+            if (yy > yMax) yMax = yy;
+            if (xx < xMin) xMin = xx;
+            if (xx > xMax) xMax = xx;
+
+            const up = idx - cw, dn = idx + cw, lf = idx - 1, rt = idx + 1;
+            if (!visited[up] && filtered[up]) { visited[up] = 1; q[tail++] = up; }
+            if (!visited[dn] && filtered[dn]) { visited[dn] = 1; q[tail++] = dn; }
+            if (!visited[lf] && filtered[lf]) { visited[lf] = 1; q[tail++] = lf; }
+            if (!visited[rt] && filtered[rt]) { visited[rt] = 1; q[tail++] = rt; }
+          }
+
+          if (area < minComponentArea) continue;
+
+          const regionW = Math.max(1, xMax - xMin + 1);
+          const regionH = Math.max(1, yMax - yMin + 1);
+          const bboxArea = regionW * regionH;
+          const fill = area / bboxArea;
+          const aspect = regionW / regionH;
+          const aspectScore = (aspect >= 0.20 && aspect <= 1.3) ? 1 : 0.65;
+          const nearEdge = (xMin <= marginX + 1 || yMin <= marginY + 1 || xMax >= cw - marginX - 2 || yMax >= ch - marginY - 2);
+          const edgePenalty = nearEdge ? 0.8 : 1;
+          const score = area * (0.35 + 0.65 * fill) * aspectScore * edgePenalty;
+
+          if (score > bestScore) {
+            bestScore = score;
+            rMin = yMin; rMax = yMax; cMin = xMin; cMax = xMax;
+            fillRatio = fill;
+            bestCorners = [
+              { x: tl.x, y: tl.y },
+              { x: tr.x, y: tr.y },
+              { x: br.x, y: br.y },
+              { x: bl.x, y: bl.y },
+            ];
+          }
+        }
+      }
+
+      // Fallback: wenn keine brauchbare zusammenhängende Region gefunden wurde
+      if (bestScore < 0) {
+        rMin = ch; rMax = 0; cMin = cw; cMax = 0;
+        for (let y = marginY; y < ch - marginY; y++) {
+          for (let x = marginX; x < cw - marginX; x++) {
+            if (!filtered[y * cw + x]) continue;
+            if (y < rMin) rMin = y; if (y > rMax) rMax = y;
+            if (x < cMin) cMin = x; if (x > cMax) cMax = x;
+          }
+        }
+      }
+
+      // Letzter Rückfall: nahezu Vollbild statt kaputtem Rechteck
+      if (rMax <= rMin || cMax <= cMin || brightCount < n * 0.02) {
         rMin = marginY; rMax = ch - marginY;
         cMin = marginX; cMax = cw - marginX;
+        fillRatio = 0.25;
       }
 
       // ── Konfidenzbewertung ───────────────────────────────────────
@@ -2687,8 +3186,9 @@ const OCR = (() => {
       // Kassenbon: typischerweise hochformatig (aspect 0.25–0.90)
       const aspectOk   = aspect >= 0.20 && aspect <= 1.2;
       const coverageOk = coverage > 0.10 && coverage < 0.95;
-      const confidence = (aspectOk ? 0.5 : 0.2) + (coverageOk ? 0.5 : 0.2);
-      console.log(`Auto-Ecken: Otsu=${otsuT}, coverage=${(coverage*100).toFixed(0)}%, aspect=${aspect.toFixed(2)}, conf=${confidence.toFixed(2)}`);
+      const fillOk = fillRatio >= 0.45;
+      const confidence = (aspectOk ? 0.4 : 0.2) + (coverageOk ? 0.35 : 0.2) + (fillOk ? 0.25 : 0.1);
+      console.log(`Auto-Ecken: Otsu=${otsuT}, brightT=${brightT}, coverage=${(coverage*100).toFixed(0)}%, aspect=${aspect.toFixed(2)}, fill=${fillRatio.toFixed(2)}, conf=${confidence.toFixed(2)}`);
 
       // Leichtes Padding um die erkannte Region
       const padX = Math.round(cw * 0.015), padY = Math.round(ch * 0.015);
@@ -2697,21 +3197,107 @@ const OCR = (() => {
       const y0 = Math.max(0, rMin - padY) / sc;
       const y1 = Math.min(ch-1, rMax + padY) / sc;
 
-      _cropPts = _orderTLTRBRBL([
+      const rectCorners = _orderTLTRBRBL([
         { x: x0, y: y0 }, { x: x1, y: y0 },
         { x: x1, y: y1 }, { x: x0, y: y1 },
       ]);
 
+      let paperCorners = null;
+      if (Array.isArray(bestCorners) && bestCorners.length === 4) {
+        const ordered = _orderTLTRBRBL(bestCorners.map(p => ({ x: p.x, y: p.y })));
+        const uniq = new Set(ordered.map(p => `${Math.round(p.x)}|${Math.round(p.y)}`));
+        if (uniq.size === 4) {
+          const cx = ordered.reduce((a, p) => a + p.x, 0) / 4;
+          const cy = ordered.reduce((a, p) => a + p.y, 0) / 4;
+          const expand = 1.03;
+          const expanded = ordered.map(p => ({
+            x: Math.max(0, Math.min(cw - 1, cx + (p.x - cx) * expand)),
+            y: Math.max(0, Math.min(ch - 1, cy + (p.y - cy) * expand)),
+          }));
+          const areaPoly = Math.abs(
+            expanded[0].x * expanded[1].y + expanded[1].x * expanded[2].y + expanded[2].x * expanded[3].y + expanded[3].x * expanded[0].y -
+            expanded[0].y * expanded[1].x - expanded[1].y * expanded[2].x - expanded[2].y * expanded[3].x - expanded[3].y * expanded[0].x
+          ) / 2;
+          const bboxW = Math.max(...expanded.map(p => p.x)) - Math.min(...expanded.map(p => p.x));
+          const bboxH = Math.max(...expanded.map(p => p.y)) - Math.min(...expanded.map(p => p.y));
+          const bboxA = Math.max(1, bboxW * bboxH);
+          if (bboxW >= 12 && bboxH >= 18 && areaPoly / bboxA >= 0.25) {
+            paperCorners = expanded.map(p => ({ x: p.x / sc, y: p.y / sc }));
+          }
+        }
+      }
+
+      _cropPts = paperCorners ? _orderTLTRBRBL(paperCorners) : rectCorners;
+      const geo = _assessCropGeometry(_cropPts, _srcW, _srcH);
+      const _edgeInkRatio = (srcPts) => {
+        const p = _orderTLTRBRBL(srcPts.map(x => ({ x: x.x * sc, y: x.y * sc })));
+        const edges = [[p[0], p[1]], [p[1], p[2]], [p[2], p[3]], [p[3], p[0]]];
+        const darkT = Math.max(35, Math.min(155, otsuT - 25));
+        const band = Math.max(1, Math.round(Math.min(cw, ch) * 0.007));
+        let dark = 0, all = 0;
+        for (const [a, b] of edges) {
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const len = Math.hypot(dx, dy) || 1;
+          const nx = -dy / len, ny = dx / len;
+          const steps = Math.max(24, Math.round(len * 0.22));
+          for (let s = 0; s <= steps; s++) {
+            const t = s / steps;
+            const cx = a.x + dx * t, cy = a.y + dy * t;
+            for (let o = -band; o <= band; o++) {
+              const x = Math.round(cx + nx * o);
+              const y = Math.round(cy + ny * o);
+              if (x < 0 || y < 0 || x >= cw || y >= ch) continue;
+              const g = gray[y * cw + x];
+              if (g <= darkT) dark++;
+              all++;
+            }
+          }
+        }
+        return all ? (dark / all) : 0;
+      };
+
+      const edgeInkRatio = _edgeInkRatio(_cropPts);
+      const textEdgeRisk = edgeInkRatio > 0.20;
+      const confidenceFinal = Math.max(
+        0.05,
+        Math.min(
+          0.99,
+          confidence
+            + (geo.severe ? -0.45 : (geo.risky ? -0.25 : 0))
+            + (textEdgeRisk ? -0.25 : 0)
+        )
+      );
+      let reconstructed = false;
+      if (geo.risky && geo.nearBorderCount >= 1) {
+        _cropPts = _reconstructVirtualCorners(_cropPts, _srcW, _srcH);
+        reconstructed = true;
+      }
+      if (textEdgeRisk) {
+        const cx = (_cropPts[0].x + _cropPts[1].x + _cropPts[2].x + _cropPts[3].x) / 4;
+        const cy = (_cropPts[0].y + _cropPts[1].y + _cropPts[2].y + _cropPts[3].y) / 4;
+        const expand = 1.08;
+        _cropPts = _orderTLTRBRBL(_cropPts.map(p => ({
+          x: Math.max(-_srcW * 0.20, Math.min(_srcW * 1.20, cx + (p.x - cx) * expand)),
+          y: Math.max(-_srcH * 0.20, Math.min(_srcH * 1.20, cy + (p.y - cy) * expand)),
+        })));
+      }
+      _autoCornerMeta = { risky: !!geo.risky, severe: !!geo.severe, reconstructed, nearBorderCount: geo.nearBorderCount || 0 };
+
       // Konfidenz im Info-Text anzeigen
       const infoEl = _ui.wrap?.querySelector('div[style*="font-mono"]');
       if (infoEl) {
-        const label = confidence >= 0.8 ? '✓ Auto-Ecken gut'
-                    : confidence >= 0.5 ? '~ Auto-Ecken OK — bitte prüfen'
+        const label = confidenceFinal >= 0.8 ? '✓ Auto-Ecken gut'
+                    : confidenceFinal >= 0.5 ? '~ Auto-Ecken OK — bitte prüfen'
                     :                     '⚠ Auto-Ecken unsicher — bitte manuell anpassen';
-        infoEl.textContent = `${label} • ↻ Drehen wenn seitlich • Scannen`;
+        const geoHint = reconstructed
+          ? ' • Erweiterter Rahmen rekonstruiert (Ecke außerhalb möglich)'
+          : (geo.risky ? ' • Perspektive kritisch (Ecke evtl. außerhalb)' : '');
+        const textHint = textEdgeRisk ? ' • Kanten schneiden Textzeilen (bitte prüfen)' : '';
+        infoEl.textContent = `${label}${geoHint}${textHint} • ↻ Drehen wenn seitlich • Scannen`;
       }
     } catch (e) {
       console.warn('Auto-corner guess failed:', e);
+      _autoCornerMeta = null;
     }
   }
 
@@ -2720,6 +3306,67 @@ const OCR = (() => {
   // ─────────────────────────────────────────────────────────────
 
   function _dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
+
+  function _polygonArea4(pts) {
+    return Math.abs(
+      pts[0].x * pts[1].y + pts[1].x * pts[2].y + pts[2].x * pts[3].y + pts[3].x * pts[0].y -
+      pts[0].y * pts[1].x - pts[1].y * pts[2].x - pts[2].y * pts[3].x - pts[3].y * pts[0].x
+    ) / 2;
+  }
+
+  function _cornerAngleDeg(prev, cur, next) {
+    const ax = prev.x - cur.x, ay = prev.y - cur.y;
+    const bx = next.x - cur.x, by = next.y - cur.y;
+    const na = Math.hypot(ax, ay) || 1e-6;
+    const nb = Math.hypot(bx, by) || 1e-6;
+    const cos = Math.max(-1, Math.min(1, (ax * bx + ay * by) / (na * nb)));
+    return Math.acos(cos) * (180 / Math.PI);
+  }
+
+  function _assessCropGeometry(pts, w, h) {
+    if (!Array.isArray(pts) || pts.length !== 4 || !w || !h) return { risky: false, severe: false };
+    const p = _orderTLTRBRBL(pts.map(x => ({ x: x.x, y: x.y })));
+    const top = _dist(p[0], p[1]), right = _dist(p[1], p[2]), bottom = _dist(p[2], p[3]), left = _dist(p[3], p[0]);
+    const edgeRatio = Math.max(top / Math.max(1, bottom), bottom / Math.max(1, top), left / Math.max(1, right), right / Math.max(1, left));
+    const area = _polygonArea4(p);
+    const minX = Math.min(...p.map(x => x.x)), maxX = Math.max(...p.map(x => x.x));
+    const minY = Math.min(...p.map(x => x.y)), maxY = Math.max(...p.map(x => x.y));
+    const bboxArea = Math.max(1, (maxX - minX) * (maxY - minY));
+    const fill = area / bboxArea;
+    const margin = Math.max(4, Math.round(Math.min(w, h) * 0.02));
+    const nearBorderCount = p.filter(x => x.x <= margin || x.y <= margin || x.x >= (w - 1 - margin) || x.y >= (h - 1 - margin)).length;
+    const angles = [
+      _cornerAngleDeg(p[3], p[0], p[1]),
+      _cornerAngleDeg(p[0], p[1], p[2]),
+      _cornerAngleDeg(p[1], p[2], p[3]),
+      _cornerAngleDeg(p[2], p[3], p[0]),
+    ];
+    const minAngle = Math.min(...angles);
+    const risky = (nearBorderCount >= 2 && edgeRatio > 2.1) || minAngle < 18 || fill < 0.26;
+    const severe = (nearBorderCount >= 2 && edgeRatio > 2.8) || minAngle < 14 || fill < 0.20;
+    return { risky, severe, edgeRatio, minAngle, fill, nearBorderCount };
+  }
+
+  function _reconstructVirtualCorners(pts, w, h) {
+    const p = _orderTLTRBRBL((pts || []).map(x => ({ x: x.x, y: x.y })));
+    const margin = Math.max(4, Math.round(Math.min(w, h) * 0.02));
+    const near = p.map(x => x.x <= margin || x.y <= margin || x.x >= (w - 1 - margin) || x.y >= (h - 1 - margin));
+    const out = p.map(x => ({ x: x.x, y: x.y }));
+    const est = (a, b, c) => ({ x: out[a].x + out[b].x - out[c].x, y: out[a].y + out[b].y - out[c].y });
+
+    if (near[0]) out[0] = est(1, 3, 2); // tl = tr + bl - br
+    if (near[1]) out[1] = est(0, 2, 3); // tr = tl + br - bl
+    if (near[2]) out[2] = est(1, 3, 0); // br = tr + bl - tl
+    if (near[3]) out[3] = est(0, 2, 1); // bl = tl + br - tr
+
+    const minX = -w * 0.35, maxX = w * 1.35;
+    const minY = -h * 0.35, maxY = h * 1.35;
+    for (const q of out) {
+      q.x = Math.max(minX, Math.min(maxX, q.x));
+      q.y = Math.max(minY, Math.min(maxY, q.y));
+    }
+    return _orderTLTRBRBL(out);
+  }
 
   function _computeDstSize(pts) {
     const W = Math.max(_dist(pts[0],pts[1]), _dist(pts[3],pts[2]));
@@ -2801,10 +3448,15 @@ const OCR = (() => {
   // NEU: Warp-Vorschau anzeigen, dann scannen
   // ─────────────────────────────────────────────────────────────
 
-  function _showWarpPreview(warpedCanvas, onConfirm, onBack) {
+  function _showWarpPreview(warpedCanvas, onConfirm, onBack, opts = {}) {
     if (!_ui.previewEl) return onConfirm(); // fallback
 
     // Vorschau-Canvas befüllen
+    const msg = document.getElementById('ocr-warp-msg');
+    if (msg) {
+      msg.textContent = opts?.warningText || 'Begradigt — sieht das gut aus?';
+      msg.style.color = opts?.warningText ? 'var(--orange)' : 'var(--t3)';
+    }
     const pc = document.getElementById('ocr-warp-canvas');
     if (pc) {
       const aspect = warpedCanvas.width / warpedCanvas.height;
@@ -2841,6 +3493,7 @@ const OCR = (() => {
     if (!_srcBitmap || !_cropPts) return;
 
     _setProgress(10, 'Beleg wird begradigt…');
+    const geo = _assessCropGeometry(_cropPts, _srcW, _srcH);
 
     const warped = _warpPerspectiveToCanvas(_srcBitmap, _cropPts);
     _lastWarped = warped; // für Tap-Workflow speichern
@@ -2857,6 +3510,11 @@ const OCR = (() => {
         _enableCropUI();
         _renderCrop();
         _setProgress(18, 'Ecken anpassen, dann „Scannen"');
+      },
+      {
+        warningText: (_autoCornerMeta?.reconstructed || geo.risky)
+          ? '⚠ Rahmen wurde erweitert/rekonstruiert (Ecke evtl. außerhalb). Vorschau prüfen; bei Verzerrung Ecken leicht nach innen ziehen.'
+          : ''
       }
     );
   }
@@ -3751,8 +4409,18 @@ const OCR = (() => {
       statusLine.style.color = 'var(--t3)';
       try {
         const tf = tapFields.find(f => f.key === selectedKey);
+        const prevFieldBeforeFrame = _lastParsed?.[selectedKey]
+          ? JSON.parse(JSON.stringify(_lastParsed[selectedKey]))
+          : null;
         const extracted = await _ocrRegionRect(imgSrc, rx, ry, rw, rh, selectedKey);
         if (extracted != null) {
+          _pushGuidedHistory();
+          const manualBox = {
+            x0: Math.max(0, Math.min(imgSrc.width, rx)),
+            y0: Math.max(0, Math.min(imgSrc.height, ry)),
+            x1: Math.max(0, Math.min(imgSrc.width, rx + rw)),
+            y1: Math.max(0, Math.min(imgSrc.height, ry + rh)),
+          };
           const targetEl = tf?.id ? document.getElementById(tf.id) : null;
           if (targetEl) {
             targetEl.value = String(extracted);
@@ -3760,9 +4428,53 @@ const OCR = (() => {
             if (hint) { hint.textContent = '✓ Manuell aus Foto'; hint.style.color = 'var(--t3)'; }
             const merged = _mergeParsedWithInputs({ [selectedKey]: String(extracted) });
             _validateFinalize(merged);
+            _refreshAlternatives(merged);
             _lastParsed = merged;
+            _lastManualFrame = { key: selectedKey, bbox: manualBox };
+            _guidedState.active = true;
+            _guidedState.accepted.delete(selectedKey);
+            delete _guidedState.deferred[selectedKey];
+            _guidedState.pendingTapField = selectedKey;
+            _guidedState.justFramedField = selectedKey;
+
+            // Vorherigen Wert als Alternative behalten, damit ein schneller Rückvergleich möglich ist.
+            const prevVal = Number(prevFieldBeforeFrame?.value);
+            const nowVal = Number(_lastParsed?.[selectedKey]?.value);
+            if (Number.isFinite(prevVal) && Number.isFinite(nowVal) && Math.abs(prevVal - nowVal) > 0.0005) {
+              const curField = _lastParsed[selectedKey] || {};
+              if (!Array.isArray(curField._alts)) curField._alts = [];
+              const prevAlt = {
+                value: prevVal,
+                raw: String(prevFieldBeforeFrame?.raw || prevVal),
+                label: 'Vorheriger Wert',
+                contextStrength: prevFieldBeforeFrame?.contextStrength || 'context',
+              };
+              const hasPrevAlt = curField._alts.some(a => Math.abs(Number(a?.value) - prevVal) <= 0.0005);
+              if (!hasPrevAlt) curField._alts.unshift(prevAlt);
+            }
+
+            if (selectedKey !== 'date') {
+              try {
+                const reread = await _rereadCandidatesFromBbox(imgSrc, manualBox, selectedKey);
+                if (reread?.length) _mergeRereadAltsIntoParsed(selectedKey, reread);
+              } catch (_) {}
+            }
+            const def = _fieldDef(selectedKey);
+            if (def) {
+              _guidedState.previewByField[selectedKey] = {
+                value: def.fmt(extracted),
+                raw: String(extracted),
+                isAlt: false,
+                idx: 0,
+                label: 'Eingerahmt',
+                bbox: manualBox,
+              };
+            }
             window.__OCR_LAST_PARSED__ = merged;
             showResult(merged);
+            requestAnimationFrame(() => {
+              document.getElementById('ocr-guided-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            });
             setDrawEnabled(false);
           } else if (selectedKey === 'odometer') {
             _setVal('tf-odometer', String(Math.round(extracted)));

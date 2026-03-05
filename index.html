@@ -10,7 +10,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Mulish:wght@400;500;600&display=swap" rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-  <link rel="stylesheet" href="style.css?v=20260303">
+  <link rel="stylesheet" href="style.css?v=20260305s">
 </head>
 <body>
 <div id="auth-screen" class="auth-screen">
@@ -264,6 +264,8 @@
           </div>
           <button class="btn btn-danger btn-full" onclick="App.clearAllData()">Alle lokalen Daten löschen</button>
         </div>
+
+        <div id="build-info" style="padding:8px 14px 14px;color:var(--t3);font-family:var(--font-mono);font-size:10px;line-height:1.5;word-break:break-word;white-space:pre-line"></div>
 
       </div>
     </div>
@@ -654,9 +656,15 @@
           <div class="form-group">
             <label>Datum</label>
             <div class="ocr-date-split">
-              <input type="text" id="ocr-r-date-day" class="ocr-field" inputmode="numeric" maxlength="2" placeholder="TT" oninput="OCR.onDatePartsInput()">
-              <input type="text" id="ocr-r-date-month" class="ocr-field" inputmode="numeric" maxlength="2" placeholder="MM" oninput="OCR.onDatePartsInput()">
-              <input type="text" id="ocr-r-date-year" class="ocr-field" inputmode="numeric" maxlength="4" placeholder="JJJJ" oninput="OCR.onDatePartsInput()">
+              <select id="ocr-r-date-day" class="ocr-field" onchange="OCR.onDatePartsInput()">
+                <option value="">TT</option>
+              </select>
+              <select id="ocr-r-date-month" class="ocr-field" onchange="OCR.onDatePartsInput()">
+                <option value="">MM</option>
+              </select>
+              <select id="ocr-r-date-year" class="ocr-field" onchange="OCR.onDatePartsInput()">
+                <option value="">JJJJ</option>
+              </select>
               <button type="button" class="btn btn-secondary ocr-date-picker-btn" onclick="OCR.openDatePicker()" title="Datum im Kalender wählen">📅</button>
             </div>
             <input type="date" id="ocr-r-date" class="ocr-field ocr-date-native" onchange="OCR.onDatePickerChange()">
@@ -704,11 +712,12 @@
 </div>
 
 <!-- Cache-Busting für GitHub Pages / Samsung Chrome -->
-<script src="api.js?v=20260303"></script>
-<script src="db.js?v=20260303"></script>
-<script src="calc.js?v=20260305"></script>
-<script src="vehicles.js?v=20260306"></script>
-<script src="ocr.js?v=20260333"></script>
-<script src="app.js?v=20260305"></script>
+<script src="api.js?v=20260305l"></script>
+<script src="db.js?v=20260305l"></script>
+<script src="calc.js?v=20260305l"></script>
+<script src="vehicles.js?v=20260305l"></script>
+<script src="ocr.js?v=20260305s"></script>
+<script src="build-meta.js?v=20260305s"></script>
+<script src="app.js?v=20260305s"></script>
 </body>
 </html>

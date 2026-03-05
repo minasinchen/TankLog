@@ -5,6 +5,11 @@ set -e
 
 cd "$(dirname "$0")"
 
+# Build-Meta aus neuester Datei erzeugen (für In-App Build-Check)
+if [ -x "scripts/update-build-meta.sh" ]; then
+  ./scripts/update-build-meta.sh
+fi
+
 # Stoppe alte Services falls vorhanden
 if [ -d "html" ] && [ -f "html/docker-compose.yml" ]; then
   echo "Stoppe alte Services aus html/..."
