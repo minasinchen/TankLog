@@ -16,11 +16,35 @@ const API = (() => {
       headers.Authorization = `Bearer ${_token}`;
     }
 
-    const response = await fetch(_baseUrl() + path, {
+    const doFetch = (url) => fetch(url, {
       method,
       headers,
       body: body === undefined ? undefined : JSON.stringify(body)
     });
+    let response;
+    try {
+      response = await doFetch(_baseUrl() + path);
+    } catch (primaryError) {
+      const localBase = localStorage.getItem("tanklog_api_base") || "";
+      const allowFallback = !window.TANKLOG_API_BASE && !!localBase;
+      if (allowFallback) {
+        try {
+          response = await doFetch(path);
+          localStorage.removeItem("tanklog_api_base");
+          console.warn("API base unreachable, fallback to same-origin succeeded. Cleared local tanklog_api_base.");
+        } catch (_) {
+          const err = new Error("API nicht erreichbar. Bitte Verbindung prüfen oder einmal neu anmelden.");
+          err.code = "NETWORK_ERROR";
+          err.cause = primaryError;
+          throw err;
+        }
+      } else {
+        const err = new Error("API nicht erreichbar. Bitte Verbindung prüfen oder einmal neu anmelden.");
+        err.code = "NETWORK_ERROR";
+        err.cause = primaryError;
+        throw err;
+      }
+    }
 
     let payload = null;
     const contentType = response.headers.get("content-type") || "";
@@ -75,6 +99,15 @@ const API = (() => {
     if (options.limit !== undefined) query.set("limit", String(options.limit));
     const suffix = query.toString() ? `?${query.toString()}` : "";
     return _request(`/api/fuel-prices/map-preview${suffix}`);
+  }
+
+  async function getFuelPriceHistoryMeta(fuelType, scope, options = {}) {
+    const query = new URLSearchParams();
+    if (fuelType) query.set("fuelType", fuelType);
+    if (scope) query.set("scope", scope);
+    if (options.fuelVariant) query.set("fuelVariant", String(options.fuelVariant));
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return _request(`/api/fuel-prices/history-meta${suffix}`);
   }
 
   async function searchFuelStations(params = {}) {
@@ -152,6 +185,7 @@ const API = (() => {
     login,
     getFuelPriceInsight,
     getFuelPriceMapPreview,
+    getFuelPriceHistoryMeta,
     searchFuelStations,
     getFuelStationPreferences,
     saveFuelStationPreferences,

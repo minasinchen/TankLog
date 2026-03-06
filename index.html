@@ -11,7 +11,7 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
-  <link rel="stylesheet" href="style.css?v=20260306m">
+  <link rel="stylesheet" href="style.css?v=20260306n">
 </head>
 <body>
 <div id="auth-screen" class="auth-screen">
@@ -270,6 +270,12 @@
           <div id="csv-result" style="margin-top:10px;display:none"></div>
         </div>
 
+        <div class="sync-section card">
+          <button class="btn btn-secondary btn-full" onclick="App.openPriceMap()">Preisradar-Karte (beta)</button>
+        </div>
+
+        <div id="build-info" style="padding:8px 14px 14px;color:var(--t3);font-family:var(--font-mono);font-size:10px;line-height:1.5;word-break:break-word;white-space:pre-line"></div>
+
         <!-- Danger zone -->
         <div class="sync-section card" style="border-color:rgba(239,68,68,0.3)">
           <div class="sync-section-head" style="color:var(--red)">
@@ -278,8 +284,6 @@
           </div>
           <button class="btn btn-danger btn-full" onclick="App.clearAllData()">Alle lokalen Daten löschen</button>
         </div>
-
-        <div id="build-info" style="padding:8px 14px 14px;color:var(--t3);font-family:var(--font-mono);font-size:10px;line-height:1.5;word-break:break-word;white-space:pre-line"></div>
 
       </div>
     </div>
@@ -615,7 +619,6 @@
       <div id="set-station-results" class="settings-stations-list"></div>
       <div id="set-station-selected" class="settings-stations-selected"></div>
       <button class="btn btn-secondary btn-full" onclick="App.saveFavoriteStations()" style="margin-top:8px">Lieblingstankstellen speichern</button>
-      <button class="btn btn-secondary btn-full" onclick="App.openPriceMap()" style="margin-top:8px">Preisradar-Karte (beta)</button>
       <button class="btn btn-primary btn-full" onclick="App.saveSettings()" style="margin-top:12px">Speichern</button>
       <button class="btn btn-secondary btn-full" onclick="App.switchAccount()" style="margin-top:10px">Garage / Konto wechseln</button>
       <button class="btn btn-secondary btn-full" onclick="App.logout()" style="margin-top:10px">Nur abmelden</button>
@@ -761,13 +764,13 @@
 </div>
 
 <!-- Cache-Busting für GitHub Pages / Samsung Chrome -->
-<script src="api.js?v=20260306m"></script>
-<script src="db.js?v=20260306m"></script>
-<script src="calc.js?v=20260306m"></script>
-<script src="vehicles.js?v=20260306m"></script>
-<script src="ocr.js?v=20260306m"></script>
-<script src="build-meta.js?v=20260306m"></script>
+<script src="api.js?v=20260306p"></script>
+<script src="db.js?v=20260306p"></script>
+<script src="calc.js?v=20260306n"></script>
+<script src="vehicles.js?v=20260306n"></script>
+<script src="ocr.js?v=20260306o"></script>
+<script src="build-meta.js?v=20260306n"></script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
-<script src="app.js?v=20260306m"></script>
+<script src="app.js?v=20260306q"></script>
 </body>
 </html>

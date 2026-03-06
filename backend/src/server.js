@@ -165,6 +165,18 @@ function resolveFuelSeriesKey(fuelType, petrolVariant) {
   return fuelType;
 }
 
+function isFuelSeriesMatch(entryFuelType, requestedSeriesFuelType) {
+  const entry = String(entryFuelType || "").trim().toUpperCase();
+  const requested = String(requestedSeriesFuelType || "").trim().toUpperCase();
+  if (!entry || !requested) return false;
+  if (entry === requested) return true;
+  if ((entry === "PETROL" || entry === "HYBRID_PETROL")
+      && (requested === "PETROL_E5" || requested === "PETROL_E10")) {
+    return true;
+  }
+  return false;
+}
+
 function parseDateValue(value, fieldName, required = false) {
   if (value === undefined || value === null || value === "") {
     if (required) {
@@ -488,7 +500,7 @@ function buildDailyAvgSeries(entries, garageId, fuelType, mode, now = new Date()
   const byDate = new Map();
 
   for (const entry of entries) {
-    if (entry.garageId !== garageId || entry.fuelType !== fuelType) continue;
+    if (entry.garageId !== garageId || !isFuelSeriesMatch(entry.fuelType, fuelType)) continue;
     if (resolveScopeValue(entry.mode) !== mode) continue;
     const ts = Date.parse(entry.timestamp);
     if (!Number.isFinite(ts) || ts < cutoff) continue;
@@ -514,7 +526,7 @@ function buildHourlyAvgSeries(entries, garageId, fuelType, mode, now = new Date(
   const byHour = new Map();
 
   for (const entry of entries) {
-    if (entry.garageId !== garageId || entry.fuelType !== fuelType) continue;
+    if (entry.garageId !== garageId || !isFuelSeriesMatch(entry.fuelType, fuelType)) continue;
     if (resolveScopeValue(entry.mode) !== mode) continue;
     const ts = Date.parse(entry.timestamp);
     if (!Number.isFinite(ts) || ts < cutoff) continue;
@@ -538,7 +550,7 @@ function buildHourlyAvgSeries(entries, garageId, fuelType, mode, now = new Date(
 function findLatestSample(entries, garageId, fuelType, mode) {
   let latest = null;
   for (const entry of entries) {
-    if (entry.garageId !== garageId || entry.fuelType !== fuelType) continue;
+    if (entry.garageId !== garageId || !isFuelSeriesMatch(entry.fuelType, fuelType)) continue;
     if (resolveScopeValue(entry.mode) !== mode) continue;
     const ts = Date.parse(entry.timestamp);
     if (!Number.isFinite(ts)) continue;
@@ -560,7 +572,7 @@ function buildTimingPattern(entries, garageId, fuelType, mode, now = new Date(),
   const buckets = new Map();
 
   for (const entry of entries) {
-    if (entry.garageId !== garageId || entry.fuelType !== fuelType) continue;
+    if (entry.garageId !== garageId || !isFuelSeriesMatch(entry.fuelType, fuelType)) continue;
     if (resolveScopeValue(entry.mode) !== mode) continue;
     if ((entry.resolution || "hour") !== "hour") continue;
     const ts = Date.parse(entry.timestamp);
@@ -1277,6 +1289,64 @@ app.get("/api/fuel-prices/map-preview", asyncHandler(async (req, res) => {
   }
 }));
 
+app.get("/api/fuel-prices/history-meta", asyncHandler(async (req, res) => {
+  const requestedFuelType = normalizeFuelType(req.query.fuelType || req.query.fuel || "DIESEL");
+  const petrolVariant = normalizePetrolVariant(req.query.fuelVariant || "e5");
+  const seriesFuelType = resolveFuelSeriesKey(requestedFuelType, petrolVariant);
+  const scope = resolveScopeValue(req.query.scope || "favorites");
+  const now = Date.now();
+
+  const entries = readPriceHistory()
+    .filter((entry) => entry && entry.garageId === req.auth.garageId)
+    .filter((entry) => isFuelSeriesMatch(entry.fuelType, seriesFuelType))
+    .filter((entry) => resolveScopeValue(entry.mode) === scope)
+    .filter((entry) => Number.isFinite(Date.parse(entry.timestamp)))
+    .sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
+
+  const recent = entries.slice(0, 10).map((entry) => ({
+    timestamp: entry.timestamp,
+    stationId: entry.stationId || null,
+    stationName: entry.stationName || null,
+    price: Number(entry.price),
+    resolution: entry.resolution || "hour"
+  }));
+
+  const countWithin = (days) => entries.filter((entry) => {
+    const ts = Date.parse(entry.timestamp);
+    return Number.isFinite(ts) && (now - ts) <= days * 24 * 60 * 60 * 1000;
+  }).length;
+
+  const count7d = countWithin(7);
+  const count30d = countWithin(30);
+  const count180d = countWithin(180);
+  const samplesPerMonth = Number((count180d / 6).toFixed(1));
+
+  let quality = "schwach";
+  let qualityHint = "Noch zu wenige Datenpunkte für belastbare Trends.";
+  if (count180d >= 60) {
+    quality = "gut";
+    qualityHint = "Trend-Aussagen sind schon relativ stabil.";
+  } else if (count180d >= 30) {
+    quality = "mittel";
+    qualityHint = "Erste Tendenzen sind sichtbar, aber noch schwankend.";
+  }
+
+  res.json({
+    fuelType: seriesFuelType,
+    scope,
+    summary: {
+      count7d,
+      count30d,
+      count180d,
+      samplesPerMonth,
+      quality,
+      qualityHint,
+      lastSampleAt: recent[0]?.timestamp || null
+    },
+    recentEntries: recent
+  });
+}));
+
 app.get("/api/settings", asyncHandler(async (req, res) => {
   res.json(getGarageSettings(req.auth.garageId));
 }));
@@ -1434,6 +1504,14 @@ app.get("/api/fuel-prices/insight", asyncHandler(async (req, res) => {
   try {
     current = await fetchTankerkoenigCurrentPrice(seriesFuelType, stationIds);
   } catch (error) {
+    if (latestSample) {
+      res.json({
+        ...(await buildPayloadFromHistory(existingHistory, latestSample, latestSample.timestamp, "history-fallback")),
+        stale: true,
+        warning: error.message || "Price lookup failed"
+      });
+      return;
+    }
     res.json({
       enabled: true,
       configured: true,
@@ -1446,6 +1524,14 @@ app.get("/api/fuel-prices/insight", asyncHandler(async (req, res) => {
   }
 
   if (!current) {
+    if (latestSample) {
+      res.json({
+        ...(await buildPayloadFromHistory(existingHistory, latestSample, latestSample.timestamp, "history-fallback")),
+        stale: true,
+        warning: "No open station with a valid price in configured station list."
+      });
+      return;
+    }
     res.json({
       enabled: true,
       configured: true,
@@ -1458,6 +1544,14 @@ app.get("/api/fuel-prices/insight", asyncHandler(async (req, res) => {
   }
 
   if (current.unsupportedFuelType) {
+    if (latestSample) {
+      res.json({
+        ...(await buildPayloadFromHistory(existingHistory, latestSample, latestSample.timestamp, "history-fallback")),
+        stale: true,
+        warning: "Fuel type is currently not supported for live price lookup."
+      });
+      return;
+    }
     res.json({
       enabled: true,
       configured: true,

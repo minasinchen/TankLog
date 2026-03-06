@@ -5,7 +5,7 @@
     "avgPrice": 2.049,
     "samples": 1,
     "label": "Fr ca. 16:00",
-    "generatedAt": "2026-03-06T18:56:25.329Z"
+    "generatedAt": "2026-03-06T19:26:47.085Z"
   },
   "cmmewikr80000l320m9yo851v|PETROL|all": {
     "weekday": 5,
@@ -13,7 +13,7 @@
     "avgPrice": 1.959,
     "samples": 1,
     "label": "Fr ca. 18:00",
-    "generatedAt": "2026-03-06T18:56:25.329Z"
+    "generatedAt": "2026-03-06T19:26:47.085Z"
   },
   "cmmewikr80000l320m9yo851v|PETROL|favorites": {
     "weekday": 5,
@@ -21,7 +21,7 @@
     "avgPrice": 1.989,
     "samples": 1,
     "label": "Fr ca. 16:00",
-    "generatedAt": "2026-03-06T18:56:25.329Z"
+    "generatedAt": "2026-03-06T19:26:47.085Z"
   },
   "cmmewikry0005l320hldlndc2|DIESEL|favorites": {
     "weekday": 5,
@@ -29,7 +29,7 @@
     "avgPrice": 2.009,
     "samples": 1,
     "label": "Fr ca. 16:00",
-    "generatedAt": "2026-03-06T18:56:25.329Z"
+    "generatedAt": "2026-03-06T19:26:47.085Z"
   },
   "cmmewikr80000l320m9yo851v|DIESEL|all": {
     "weekday": 5,
@@ -37,7 +37,7 @@
     "avgPrice": 2.009,
     "samples": 1,
     "label": "Fr ca. 18:00",
-    "generatedAt": "2026-03-06T18:56:25.329Z"
+    "generatedAt": "2026-03-06T19:26:47.085Z"
   },
   "cmmewikr80000l320m9yo851v|PETROL_E10|favorites": {
     "weekday": 5,
@@ -45,7 +45,7 @@
     "avgPrice": 1.929,
     "samples": 1,
     "label": "Fr ca. 18:00",
-    "generatedAt": "2026-03-06T18:56:55.400Z"
+    "generatedAt": "2026-03-06T19:29:36.884Z"
   },
   "cmmewikr80000l320m9yo851v|PETROL_E10|all": {
     "weekday": 5,
@@ -53,7 +53,7 @@
     "avgPrice": 1.899,
     "samples": 1,
     "label": "Fr ca. 18:00",
-    "generatedAt": "2026-03-06T18:55:31.946Z"
+    "generatedAt": "2026-03-06T21:50:49.939Z"
   },
   "cmmewikry0005l320hldlndc2|PETROL_E5|favorites": {
     "weekday": 5,
@@ -61,7 +61,7 @@
     "avgPrice": 1.919,
     "samples": 1,
     "label": "Fr ca. 19:00",
-    "generatedAt": "2026-03-06T19:09:23.749Z"
+    "generatedAt": "2026-03-06T20:23:55.879Z"
   },
   "cmmewikry0005l320hldlndc2|PETROL_E5|all": {
     "weekday": 5,
@@ -69,6 +69,22 @@
     "avgPrice": 1.919,
     "samples": 1,
     "label": "Fr ca. 19:00",
-    "generatedAt": "2026-03-06T19:09:16.776Z"
+    "generatedAt": "2026-03-06T20:05:49.043Z"
+  },
+  "cmmewikry0005l320hldlndc2|PETROL|all": {
+    "weekday": 5,
+    "hour": 19,
+    "avgPrice": 1.919,
+    "samples": 1,
+    "label": "Fr ca. 19:00",
+    "generatedAt": "2026-03-06T19:26:47.085Z"
+  },
+  "cmmewikry0005l320hldlndc2|PETROL|favorites": {
+    "weekday": 5,
+    "hour": 19,
+    "avgPrice": 1.919,
+    "samples": 1,
+    "label": "Fr ca. 19:00",
+    "generatedAt": "2026-03-06T19:26:47.085Z"
   }
 }

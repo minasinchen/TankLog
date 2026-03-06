@@ -3,5 +3,10 @@
     "warnConsumption": 10,
     "remindDays": 10,
     "petrolVariant": "e10"
+  },
+  "cmmewikry0005l320hldlndc2": {
+    "warnConsumption": 25,
+    "remindDays": 14,
+    "petrolVariant": "e5"
   }
 }

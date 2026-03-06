@@ -3227,8 +3227,13 @@ const OCR = (() => {
         }
       }
 
+      let fallbackRectUsed = false;
       _cropPts = paperCorners ? _orderTLTRBRBL(paperCorners) : rectCorners;
-      const geo = _assessCropGeometry(_cropPts, _srcW, _srcH);
+      if (!_isPlausibleQuad(_cropPts, _srcW, _srcH)) {
+        _cropPts = _orderTLTRBRBL(rectCorners);
+        fallbackRectUsed = true;
+      }
+      let geo = _assessCropGeometry(_cropPts, _srcW, _srcH);
       const _edgeInkRatio = (srcPts) => {
         const p = _orderTLTRBRBL(srcPts.map(x => ({ x: x.x * sc, y: x.y * sc })));
         const edges = [[p[0], p[1]], [p[1], p[2]], [p[2], p[3]], [p[3], p[0]]];
@@ -3281,7 +3286,19 @@ const OCR = (() => {
           y: Math.max(-_srcH * 0.20, Math.min(_srcH * 1.20, cy + (p.y - cy) * expand)),
         })));
       }
-      _autoCornerMeta = { risky: !!geo.risky, severe: !!geo.severe, reconstructed, nearBorderCount: geo.nearBorderCount || 0 };
+      if (!_isPlausibleQuad(_cropPts, _srcW, _srcH)) {
+        _cropPts = _orderTLTRBRBL(rectCorners);
+        fallbackRectUsed = true;
+        reconstructed = false;
+      }
+      geo = _assessCropGeometry(_cropPts, _srcW, _srcH);
+      _autoCornerMeta = {
+        risky: !!geo.risky,
+        severe: !!geo.severe,
+        reconstructed,
+        nearBorderCount: geo.nearBorderCount || 0,
+        fallbackRectUsed,
+      };
 
       // Konfidenz im Info-Text anzeigen
       const infoEl = _ui.wrap?.querySelector('div[style*="font-mono"]');
@@ -3292,8 +3309,9 @@ const OCR = (() => {
         const geoHint = reconstructed
           ? ' • Erweiterter Rahmen rekonstruiert (Ecke außerhalb möglich)'
           : (geo.risky ? ' • Perspektive kritisch (Ecke evtl. außerhalb)' : '');
+        const fallbackHint = fallbackRectUsed ? ' • Rechteck-Fallback aktiv (Auto-Ecken instabil)' : '';
         const textHint = textEdgeRisk ? ' • Kanten schneiden Textzeilen (bitte prüfen)' : '';
-        infoEl.textContent = `${label}${geoHint}${textHint} • ↻ Drehen wenn seitlich • Scannen`;
+        infoEl.textContent = `${label}${geoHint}${fallbackHint}${textHint} • ↻ Drehen wenn seitlich • Scannen`;
       }
     } catch (e) {
       console.warn('Auto-corner guess failed:', e);
@@ -3345,6 +3363,39 @@ const OCR = (() => {
     const risky = (nearBorderCount >= 2 && edgeRatio > 2.1) || minAngle < 18 || fill < 0.26;
     const severe = (nearBorderCount >= 2 && edgeRatio > 2.8) || minAngle < 14 || fill < 0.20;
     return { risky, severe, edgeRatio, minAngle, fill, nearBorderCount };
+  }
+
+  function _isPlausibleQuad(pts, w, h) {
+    if (!Array.isArray(pts) || pts.length !== 4 || !w || !h) return false;
+    const p = _orderTLTRBRBL(pts.map(x => ({ x: x.x, y: x.y })));
+    const area = _polygonArea4(p);
+    const minX = Math.min(...p.map(x => x.x));
+    const maxX = Math.max(...p.map(x => x.x));
+    const minY = Math.min(...p.map(x => x.y));
+    const maxY = Math.max(...p.map(x => x.y));
+    const bboxW = Math.max(1, maxX - minX);
+    const bboxH = Math.max(1, maxY - minY);
+    const bboxArea = bboxW * bboxH;
+    const fill = area / Math.max(1, bboxArea);
+    const minDim = Math.min(w, h);
+    const minEdge = Math.max(10, minDim * 0.05);
+    const edges = [
+      _dist(p[0], p[1]),
+      _dist(p[1], p[2]),
+      _dist(p[2], p[3]),
+      _dist(p[3], p[0]),
+    ];
+    if (edges.some(e => e < minEdge)) return false;
+    const minCornerSep = Math.max(8, minDim * 0.04);
+    for (let i = 0; i < 4; i++) {
+      for (let j = i + 1; j < 4; j++) {
+        if (_dist(p[i], p[j]) < minCornerSep) return false;
+      }
+    }
+    if (area < (w * h) * 0.03) return false;
+    if (fill < 0.20) return false;
+    if (bboxW < w * 0.12 || bboxH < h * 0.18) return false;
+    return true;
   }
 
   function _reconstructVirtualCorners(pts, w, h) {
@@ -3512,8 +3563,8 @@ const OCR = (() => {
         _setProgress(18, 'Ecken anpassen, dann „Scannen"');
       },
       {
-        warningText: (_autoCornerMeta?.reconstructed || geo.risky)
-          ? '⚠ Rahmen wurde erweitert/rekonstruiert (Ecke evtl. außerhalb). Vorschau prüfen; bei Verzerrung Ecken leicht nach innen ziehen.'
+        warningText: (_autoCornerMeta?.fallbackRectUsed || _autoCornerMeta?.reconstructed || geo.risky)
+          ? '⚠ Auto-Ecken waren instabil. Vorschau prüfen; bei Verzerrung Ecken leicht nach innen ziehen.'
           : ''
       }
     );

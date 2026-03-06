@@ -197,12 +197,17 @@ const App = (() => {
   }
 
   async function refreshCurrentView() {
-    switch (_currentView) {
-      case 'home':    await renderHome(); break;
-      case 'list':    await renderList(); break;
-      case 'analyse': await renderAnalyse(); break;
-      case 'sync':    /* static */ break;
-      case 'tank':    /* form — no re-render */ break;
+    try {
+      switch (_currentView) {
+        case 'home':    await renderHome(); break;
+        case 'list':    await renderList(); break;
+        case 'analyse': await renderAnalyse(); break;
+        case 'sync':    /* static */ break;
+        case 'tank':    /* form — no re-render */ break;
+      }
+    } catch (error) {
+      console.error('refreshCurrentView failed', error);
+      toast(error?.message || 'Ansicht konnte nicht geladen werden', 'error');
     }
   }
 
@@ -334,10 +339,21 @@ const App = (() => {
     try {
       const fuelCfg = _resolveRadarFuelConfig(vehicle);
       _lastPriceRadarContext = fuelCfg;
-      const insight = await API.getFuelPriceInsight(fuelCfg.fuelType, _priceScope, {
+      let insight = await API.getFuelPriceInsight(fuelCfg.fuelType, _priceScope, {
         fuelVariant: fuelCfg.fuelVariant,
         force: !!forceRefresh
       });
+      let fallbackNote = '';
+      if ((!insight?.available || !Number.isFinite(Number(insight?.current?.price))) && _priceScope === 'favorites') {
+        const fallbackInsight = await API.getFuelPriceInsight(fuelCfg.fuelType, 'all', {
+          fuelVariant: fuelCfg.fuelVariant,
+          force: false
+        });
+        if (fallbackInsight?.available && Number.isFinite(Number(fallbackInsight?.current?.price))) {
+          insight = fallbackInsight;
+          fallbackNote = 'Keine Favoritenpreise gefunden — zeige stattdessen Preise in deiner Garagen-Gegend.';
+        }
+      }
 
       if (!insight.enabled || !insight.configured) {
         el.innerHTML = `
@@ -369,7 +385,7 @@ const App = (() => {
       const scopeLabel = insight?.garageScope?.label || 'Preise in deiner Garagen-Gegend';
       const stationCount = insight?.garageScope?.stationCount || 0;
       const stationSource = insight?.garageScope?.stationSource === 'favorites' ? 'Lieblingsstationen' : 'Garagen-Standard';
-      const selectedScope = insight?.garageScope?.selectedScope || _priceScope;
+      const selectedScope = insight?.garageScope?.selectedScope || (fallbackNote ? 'all' : _priceScope);
       const effectiveFuel = insight?.fuelType === 'PETROL_E10' ? 'Benzin E10'
         : insight?.fuelType === 'PETROL_E5' ? 'Benzin E5'
         : fuelCfg.label;
@@ -416,6 +432,7 @@ const App = (() => {
         <div class="price-radar-meta">
           Aktualisiert: ${sampledAt} · Günstigste Station jetzt: ${esc(insight?.current?.stationName || insight?.current?.stationId || '—')}
         </div>
+        ${fallbackNote ? `<div class="price-radar-note" style="margin-top:6px">${esc(fallbackNote)}</div>` : ''}
         <div class="price-radar-note">Hinweis: Abrufe sind bewusst begrenzt (kostenloser API-Key).</div>
       `;
     } catch (error) {
@@ -1950,7 +1967,7 @@ const App = (() => {
         return;
       }
       const fuelCfg = _lastPriceRadarContext || _resolveRadarFuelConfig(vehicle);
-      const [allResult, favResult] = await Promise.all([
+      const [allResult, favResult, meta] = await Promise.all([
         API.getFuelPriceMapPreview(fuelCfg.fuelType, {
           fuelVariant: fuelCfg.fuelVariant,
           scope: 'all',
@@ -1960,6 +1977,9 @@ const App = (() => {
           fuelVariant: fuelCfg.fuelVariant,
           scope: 'favorites',
           limit: 80
+        }),
+        API.getFuelPriceHistoryMeta(fuelCfg.fuelType, _priceScope, {
+          fuelVariant: fuelCfg.fuelVariant
         })
       ]);
       const allStations = Array.isArray(allResult?.stations) ? allResult.stations : [];
@@ -2034,10 +2054,35 @@ const App = (() => {
           </div>
         `;
       }).join('');
+      const summary = meta?.summary || {};
+      const qualityClass = summary.quality === 'gut' ? 'cheap' : summary.quality === 'mittel' ? 'mid' : 'expensive';
+      const recentRows = (Array.isArray(meta?.recentEntries) ? meta.recentEntries : []).map((entry, index) => {
+        const when = entry.timestamp
+          ? new Date(entry.timestamp).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })
+          : '—';
+        const stationLabel = entry.stationName || entry.stationId || '—';
+        return `
+          <div class="price-meta-row">
+            <div>${index + 1}. ${esc(when)} · ${esc(stationLabel)}</div>
+            <div class="price-map-price">${_fmtPriceValue(entry.price)} €/L</div>
+          </div>
+        `;
+      }).join('');
       body.innerHTML = `
         ${mapHtml}
         <div class="settings-station-meta" style="margin:8px 0 6px">Preisübersicht in deiner Garagen-Gegend (${stations.length} inkl. Favoriten)</div>
         <div class="price-map-list">${listHtml}</div>
+        <div class="price-map-meta-card">
+          <div class="price-map-meta-head">
+            Datenbasis: <span class="${qualityClass}">${esc((summary.quality || 'schwach').toUpperCase())}</span>
+          </div>
+          <div class="settings-station-meta" style="margin-top:4px">
+            7 Tage: ${summary.count7d || 0} · 30 Tage: ${summary.count30d || 0} · 180 Tage: ${summary.count180d || 0} · Ø/Monat: ${summary.samplesPerMonth || 0}
+          </div>
+          <div class="settings-station-meta" style="margin-top:4px">${esc(summary.qualityHint || 'Noch keine Daten vorhanden.')}</div>
+          <div class="settings-station-meta" style="margin-top:8px">Letzte 10 Abrufe:</div>
+          <div class="price-map-meta-list">${recentRows || '<div class="settings-station-meta">Noch keine Abrufe vorhanden.</div>'}</div>
+        </div>
       `;
 
       const mapEl = document.getElementById('price-map-canvas');

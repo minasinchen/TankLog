@@ -128,5 +128,95 @@
     "stationId": "ff0a499f-0325-41c9-a78c-14dd1773af0b",
     "stationName": null,
     "price": 1.919
+  },
+  {
+    "timestamp": "2026-03-06T19:00:00.000Z",
+    "garageId": "cmmewikr80000l320m9yo851v",
+    "fuelType": "PETROL",
+    "mode": "all",
+    "resolution": "hour",
+    "stationId": "b1957bf9-c90d-4b3e-910f-7a3a918176c0",
+    "stationName": null,
+    "price": 1.959
+  },
+  {
+    "timestamp": "2026-03-06T19:00:00.000Z",
+    "garageId": "cmmewikr80000l320m9yo851v",
+    "fuelType": "PETROL",
+    "mode": "favorites",
+    "resolution": "hour",
+    "stationId": "17626bc9-8273-417a-926e-7b0d49b87a38",
+    "stationName": null,
+    "price": 1.999
+  },
+  {
+    "timestamp": "2026-03-06T19:00:00.000Z",
+    "garageId": "cmmewikry0005l320hldlndc2",
+    "fuelType": "PETROL",
+    "mode": "all",
+    "resolution": "hour",
+    "stationId": "ff0a499f-0325-41c9-a78c-14dd1773af0b",
+    "stationName": null,
+    "price": 1.919
+  },
+  {
+    "timestamp": "2026-03-06T19:00:00.000Z",
+    "garageId": "cmmewikry0005l320hldlndc2",
+    "fuelType": "PETROL",
+    "mode": "favorites",
+    "resolution": "hour",
+    "stationId": "ff0a499f-0325-41c9-a78c-14dd1773af0b",
+    "stationName": null,
+    "price": 1.919
+  },
+  {
+    "timestamp": "2026-03-06T19:00:00.000Z",
+    "garageId": "cmmewikr80000l320m9yo851v",
+    "fuelType": "PETROL_E10",
+    "mode": "favorites",
+    "resolution": "hour",
+    "stationId": "17626bc9-8273-417a-926e-7b0d49b87a38",
+    "stationName": null,
+    "price": 1.939
+  },
+  {
+    "timestamp": "2026-03-06T19:00:00.000Z",
+    "garageId": "cmmewikr80000l320m9yo851v",
+    "fuelType": "PETROL_E10",
+    "mode": "all",
+    "resolution": "hour",
+    "stationId": "b1957bf9-c90d-4b3e-910f-7a3a918176c0",
+    "stationName": null,
+    "price": 1.899
+  },
+  {
+    "timestamp": "2026-03-06T20:00:00.000Z",
+    "garageId": "cmmewikry0005l320hldlndc2",
+    "fuelType": "PETROL_E5",
+    "mode": "all",
+    "resolution": "hour",
+    "stationId": "ff0a499f-0325-41c9-a78c-14dd1773af0b",
+    "stationName": null,
+    "price": 1.949
+  },
+  {
+    "timestamp": "2026-03-06T20:00:00.000Z",
+    "garageId": "cmmewikry0005l320hldlndc2",
+    "fuelType": "PETROL_E5",
+    "mode": "favorites",
+    "resolution": "hour",
+    "stationId": "518957b3-0d15-4882-bbcb-c404d77fd59c",
+    "stationName": null,
+    "price": 1.929
+  },
+  {
+    "timestamp": "2026-03-06T21:00:00.000Z",
+    "garageId": "cmmewikr80000l320m9yo851v",
+    "fuelType": "PETROL_E10",
+    "mode": "all",
+    "resolution": "hour",
+    "stationId": "29e303b7-589a-435d-b906-648cb5c1b5cb",
+    "stationName": null,
+    "price": 1.899
   }
 ]
