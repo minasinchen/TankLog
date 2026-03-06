@@ -218,5 +218,15 @@
     "stationId": "29e303b7-589a-435d-b906-648cb5c1b5cb",
     "stationName": null,
     "price": 1.899
+  },
+  {
+    "timestamp": "2026-03-06T22:00:00.000Z",
+    "garageId": "cmmewikr80000l320m9yo851v",
+    "fuelType": "PETROL_E10",
+    "mode": "all",
+    "resolution": "hour",
+    "stationId": "29e303b7-589a-435d-b906-648cb5c1b5cb",
+    "stationName": null,
+    "price": 1.899
   }
 ]

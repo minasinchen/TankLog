@@ -1,5 +1,13 @@
 const API = (() => {
-  const TOKEN_KEY = "tanklog_token";
+  const LEGACY_TOKEN_KEY = "tanklog_token";
+  const TOKEN_KEY = `tanklog_token_${window.location.host}`;
+  const migratedLegacy = localStorage.getItem(LEGACY_TOKEN_KEY) || "";
+  if (migratedLegacy && !localStorage.getItem(TOKEN_KEY)) {
+    localStorage.setItem(TOKEN_KEY, migratedLegacy);
+  }
+  if (migratedLegacy) {
+    localStorage.removeItem(LEGACY_TOKEN_KEY);
+  }
   let _token = localStorage.getItem(TOKEN_KEY) || "";
   let _session = null;
   let _onUnauthorized = null;
@@ -71,7 +79,7 @@ const API = (() => {
   }
 
   async function login(username, password) {
-    const result = await _request("/auth/login", {
+    const result = await _request("/api/auth/login", {
       method: "POST",
       auth: false,
       body: { username, password }
@@ -132,7 +140,7 @@ const API = (() => {
   }
 
   async function getMe() {
-    const result = await _request("/auth/me");
+    const result = await _request("/api/auth/me");
     _session = result;
     return _session;
   }
@@ -160,7 +168,7 @@ const API = (() => {
   async function logout() {
     if (_token) {
       try {
-        await _request("/auth/logout", { method: "POST" });
+        await _request("/api/auth/logout", { method: "POST" });
       } catch {}
     }
     clearSession();

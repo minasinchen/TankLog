@@ -1002,7 +1002,7 @@ app.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/auth/login", asyncHandler(async (req, res) => {
+app.post(["/auth/login", "/api/auth/login"], asyncHandler(async (req, res) => {
   const loginId = String(req.body.username || req.body.email || "").trim().toLowerCase();
   const password = String(req.body.password || "");
 
@@ -1036,7 +1036,7 @@ app.post("/auth/login", asyncHandler(async (req, res) => {
   });
 }));
 
-app.get("/auth/me", authRequired, asyncHandler(async (req, res) => {
+app.get(["/auth/me", "/api/auth/me"], authRequired, asyncHandler(async (req, res) => {
   const garage = await prisma.garage.findUnique({
     where: { id: req.auth.garageId },
     select: {
@@ -1055,7 +1055,7 @@ app.get("/auth/me", authRequired, asyncHandler(async (req, res) => {
   });
 }));
 
-app.post("/auth/logout", authRequired, asyncHandler(async (req, res) => {
+app.post(["/auth/logout", "/api/auth/logout"], authRequired, asyncHandler(async (req, res) => {
   await prisma.user.update({
     where: { id: req.auth.id },
     data: {
