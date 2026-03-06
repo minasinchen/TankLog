@@ -14,6 +14,11 @@ const App = (() => {
   let _settings = {};
   let _session = null;
   let _pendingFuelListFocusId = null;
+  let _priceScope = localStorage.getItem('tanklog_price_scope') || 'favorites';
+  let _favoriteStationIds = [];
+  let _favoriteStationResults = [];
+  let _lastPriceRadarContext = null;
+  let _priceMapInstance = null;
 
   // State for edit forms
   let _editFuelId = null;
@@ -65,6 +70,7 @@ const App = (() => {
     // Settings form
     document.getElementById('set-warn-consumption').value = _settings.warnConsumption || 25;
     document.getElementById('set-remind-days').value = _settings.remindDays || 14;
+    document.getElementById('set-petrol-variant').value = _settings.petrolVariant === 'e10' ? 'e10' : 'e5';
 
     // Render initial view
     await refreshCurrentView();
@@ -217,16 +223,13 @@ const App = (() => {
     const entries = await DB.getFuelEntries(_currentVehicleId);
     const enriched = Calc.enrichFuel(entries);
     const summary = Calc.summary(enriched);
-    const sumLast30 = Calc.summary(enriched, 30);
-
     // Stats grid
     const statsEl = document.getElementById('home-stats');
     statsEl.innerHTML = [
       _statCard('Ø Verbrauch', Calc.fmtNum(summary.avgCons), 'L/100km', true),
-      _statCard('Ø €/Liter', Calc.fmtNum(summary.avgPpl, 3), '€/L'),
-      _statCard('Gesamtkosten', Calc.fmtNum(summary.totalCost, 2), '€ gesamt'),
       _statCard('Kosten/100km', Calc.fmtNum(summary.avgCostPer100, 2), '€/100km'),
     ].join('');
+    await _renderFuelPriceInsight();
 
     // Last fuel
     const lastEl = document.getElementById('home-last-fuel');
@@ -257,7 +260,16 @@ const App = (() => {
     }
 
     // Upcoming maintenance
-    await _renderUpcoming();
+    const hasUpcoming = await _renderUpcoming();
+    const upcomingBlock = document.getElementById('home-upcoming-block');
+    const lastFuelBlock = document.getElementById('home-last-fuel-block');
+    if (upcomingBlock && lastFuelBlock) {
+      if (hasUpcoming) {
+        contentEl.insertBefore(upcomingBlock, lastFuelBlock);
+      } else {
+        contentEl.insertBefore(upcomingBlock, lastFuelBlock.nextSibling);
+      }
+    }
 
     // Recent fuel entries (last 5)
     const recentEl = document.getElementById('home-recent-list');
@@ -267,6 +279,157 @@ const App = (() => {
     } else {
       recentEl.innerHTML = '<div style="padding:14px;color:var(--t3);font-family:var(--font-mono);font-size:12px;text-align:center">Keine Einträge</div>';
     }
+  }
+
+  function _mapFuelTypeToApiValue(value) {
+    const mapping = {
+      Benzin: 'PETROL',
+      Diesel: 'DIESEL',
+      'Hybrid (Benzin)': 'HYBRID_PETROL',
+      'Hybrid (Diesel)': 'HYBRID_DIESEL',
+      Elektro: 'ELECTRIC',
+      'LPG / Autogas': 'LPG',
+      LPG: 'LPG',
+      CNG: 'CNG',
+      Sonstiges: 'OTHER'
+    };
+    const key = String(value || '').trim();
+    return mapping[key] || 'OTHER';
+  }
+
+  function _fmtPriceValue(value) {
+    return Number.isFinite(value) ? Calc.fmtNum(value, 3) : '—';
+  }
+
+  function _resolveRadarFuelConfig(vehicle) {
+    const fuelType = _mapFuelTypeToApiValue(vehicle?.fuelType);
+    const petrolVariant = _settings?.petrolVariant === 'e10' ? 'e10' : 'e5';
+    const isPetrolBased = fuelType === 'PETROL' || fuelType === 'HYBRID_PETROL';
+    return {
+      fuelType,
+      fuelVariant: isPetrolBased ? petrolVariant : null,
+      label: isPetrolBased ? `Benzin ${petrolVariant.toUpperCase()}` : (vehicle?.fuelType || 'Kraftstoff')
+    };
+  }
+
+  function setPriceScope(scope) {
+    const normalized = (scope === 'all') ? 'all' : 'favorites';
+    _priceScope = normalized;
+    localStorage.setItem('tanklog_price_scope', normalized);
+    _renderFuelPriceInsight();
+  }
+
+  async function _renderFuelPriceInsight(forceRefresh = false) {
+    const el = document.getElementById('home-price-insight');
+    if (!el) return;
+
+    const vehicle = currentVehicle();
+    if (!vehicle) {
+      el.innerHTML = '<div class="price-radar-note">Kein Fahrzeug ausgewählt.</div>';
+      return;
+    }
+
+    el.innerHTML = '<div class="price-radar-note">Preise werden geladen…</div>';
+
+    try {
+      const fuelCfg = _resolveRadarFuelConfig(vehicle);
+      _lastPriceRadarContext = fuelCfg;
+      const insight = await API.getFuelPriceInsight(fuelCfg.fuelType, _priceScope, {
+        fuelVariant: fuelCfg.fuelVariant,
+        force: !!forceRefresh
+      });
+
+      if (!insight.enabled || !insight.configured) {
+        el.innerHTML = `
+          <div class="price-radar-note">
+            Preisradar ist noch nicht aktiv.<br>
+            <span style="color:var(--t3)">${esc(insight.reason || 'Bitte API konfigurieren.')}</span>
+          </div>
+        `;
+        return;
+      }
+
+      if (!insight.available) {
+        el.innerHTML = `
+          <div class="price-radar-note">
+            Preisradar aktuell nicht verfügbar.<br>
+            <span style="color:var(--t3)">${esc(insight.reason || 'Bitte später erneut versuchen.')}</span>
+          </div>
+        `;
+        return;
+      }
+
+      const delta = insight?.cheapSignal?.deltaToMedianPct;
+      const deltaText = Number.isFinite(delta)
+        ? `${delta > 0 ? '+' : ''}${Calc.fmtNum(delta, 2)}%`
+        : '—';
+      const sampledAt = insight.sampledAt
+        ? new Date(insight.sampledAt).toLocaleString('de-DE', { dateStyle: 'short', timeStyle: 'short' })
+        : '—';
+      const scopeLabel = insight?.garageScope?.label || 'Preise in deiner Garagen-Gegend';
+      const stationCount = insight?.garageScope?.stationCount || 0;
+      const stationSource = insight?.garageScope?.stationSource === 'favorites' ? 'Lieblingsstationen' : 'Garagen-Standard';
+      const selectedScope = insight?.garageScope?.selectedScope || _priceScope;
+      const effectiveFuel = insight?.fuelType === 'PETROL_E10' ? 'Benzin E10'
+        : insight?.fuelType === 'PETROL_E5' ? 'Benzin E5'
+        : fuelCfg.label;
+      const badgeClass = insight?.cheapSignal?.isCheapNow ? 'cheap' : 'neutral';
+      const badgeText = insight?.cheapSignal?.isCheapNow ? 'Jetzt günstig' : 'Im normalen Bereich';
+      const forecastMin = insight?.forecast?.expectedMin;
+      const forecastMax = insight?.forecast?.expectedMax;
+      const forecastText = Number.isFinite(forecastMin) && Number.isFinite(forecastMax)
+        ? `${_fmtPriceValue(forecastMin)}–${_fmtPriceValue(forecastMax)} €/L`
+        : 'Zu wenig Verlauf für Prognose';
+
+      el.innerHTML = `
+        <div class="price-radar-scope-toggle">
+          <button class="price-toggle ${selectedScope === 'favorites' ? 'active' : ''}" onclick="App.setPriceScope('favorites')">Günstigste der Favoriten</button>
+          <button class="price-toggle ${selectedScope === 'all' ? 'active' : ''}" onclick="App.setPriceScope('all')">Günstigste in der Gegend</button>
+        </div>
+        <div class="price-radar-actions">
+          <button class="price-mini-btn" onclick="App.refreshPriceRadar()">Jetzt aktualisieren</button>
+        </div>
+        <div class="price-radar-scope">${esc(scopeLabel)}${stationCount ? ` · ${stationCount} Stationen` : ''} · ${stationSource}</div>
+        <div class="price-radar-head">
+          <div class="price-radar-price">${_fmtPriceValue(insight?.current?.price)} €/L</div>
+          <div class="price-radar-badge ${badgeClass}">${badgeText}</div>
+        </div>
+        <div class="price-radar-grid">
+          <div class="price-radar-cell">
+            <div class="price-radar-cell-label">30 Tage Median</div>
+            <div class="price-radar-cell-value">${_fmtPriceValue(insight?.last30d?.median)} €/L</div>
+          </div>
+          <div class="price-radar-cell">
+            <div class="price-radar-cell-label">Abweichung jetzt</div>
+            <div class="price-radar-cell-value">${deltaText}</div>
+          </div>
+          <div class="price-radar-cell">
+            <div class="price-radar-cell-label">Prognose (7 Tage)</div>
+            <div class="price-radar-cell-value">${forecastText}</div>
+          </div>
+          <div class="price-radar-cell">
+            <div class="price-radar-cell-label">Messpunkte</div>
+            <div class="price-radar-cell-value">${insight?.last30d?.sampleDays || 0} Tage</div>
+          </div>
+        </div>
+        <div class="price-radar-meta">Kraftstoff: ${esc(effectiveFuel)}</div>
+        <div class="price-radar-meta">
+          Aktualisiert: ${sampledAt} · Günstigste Station jetzt: ${esc(insight?.current?.stationName || insight?.current?.stationId || '—')}
+        </div>
+        <div class="price-radar-note">Hinweis: Abrufe sind bewusst begrenzt (kostenloser API-Key).</div>
+      `;
+    } catch (error) {
+      el.innerHTML = `
+        <div class="price-radar-note">
+          Preisradar Fehler.<br>
+          <span style="color:var(--t3)">${esc(error?.message || 'Unbekannter Fehler')}</span>
+        </div>
+      `;
+    }
+  }
+
+  function refreshPriceRadar() {
+    _renderFuelPriceInsight(true);
   }
 
   async function _renderUpcoming() {
@@ -288,7 +451,7 @@ const App = (() => {
 
     if (!upcoming.length) {
       el.innerHTML = '<div style="color:var(--t3);font-family:var(--font-mono);font-size:12px;padding:4px 4px 8px">Keine bald fälligen Wartungen</div>';
-      return;
+      return false;
     }
 
     el.innerHTML = upcoming.map(m => {
@@ -310,6 +473,7 @@ const App = (() => {
         </div>
       `;
     }).join('');
+    return true;
   }
 
   function _statCard(label, val, unit, accent = false) {
@@ -734,27 +898,83 @@ const App = (() => {
       filteredCosts = costs.filter(c => c.date >= cutoffStr);
     }
 
-    _renderCharts(filteredEntries, filteredCosts);
+    await _renderCharts(filteredEntries, filteredCosts);
     _renderCostsBreakdown(filteredCosts);
     _renderAnalyseFacts(filteredEntries, filteredCosts);
   }
 
-  function _renderCharts(entries, costs) {
+  async function _renderPriceChartFromRadar() {
+    const noteEl = document.getElementById('analyse-price-radar-note');
+    const chartId = 'chart-price';
+    const vehicle = currentVehicle();
+    if (!vehicle) {
+      if (noteEl) noteEl.textContent = 'Kein Fahrzeug ausgewählt.';
+      if (_charts[chartId]) { _charts[chartId].destroy(); delete _charts[chartId]; }
+      return;
+    }
+
+    try {
+      const fuelCfg = _resolveRadarFuelConfig(vehicle);
+      const insight = await API.getFuelPriceInsight(fuelCfg.fuelType, _priceScope, {
+        fuelVariant: fuelCfg.fuelVariant
+      });
+      const mode = document.querySelector('.price-period-btn.active')?.dataset?.mode || '30d';
+      const series = mode === '7d'
+        ? insight?.history7dHourly
+        : mode === '180d'
+          ? insight?.history180dDailyAvg
+          : insight?.history30dDailyAvg;
+      if (!insight?.available || !Array.isArray(series) || !series.length) {
+        if (noteEl) noteEl.textContent = insight?.reason || 'Keine Preisverlauf-Daten verfügbar.';
+        if (_charts[chartId]) { _charts[chartId].destroy(); delete _charts[chartId]; }
+        return;
+      }
+
+      const labels = series.map((item) => {
+        if (mode === '7d') {
+          const ts = String(item.timestamp || '');
+          return ts.length >= 16 ? `${ts.slice(8, 10)}.${ts.slice(5, 7)} ${ts.slice(11, 13)}h` : ts;
+        }
+        const d = String(item.date || '');
+        return d.length >= 10 ? `${d.slice(8, 10)}.${d.slice(5, 7)}` : d;
+      });
+      const data = series.map((item) => Number(item.price || 0));
+
+      _makeChart(chartId, 'bar', labels, data, '€/L', '#60a5fa');
+      if (noteEl) {
+        const count = insight?.garageScope?.stationCount || 0;
+        const source = insight?.garageScope?.stationSource === 'favorites'
+          ? 'Lieblingsstationen'
+          : 'Garagen-Standard';
+        const trendHint = insight?.timingHint?.label
+          ? ` · Typisch günstig: ${insight.timingHint.label}`
+          : '';
+        noteEl.textContent = `Preise in deiner Garagen-Gegend${count ? ` (${count} Stationen)` : ''} · Quelle: ${source}${trendHint}`;
+      }
+    } catch (error) {
+      if (noteEl) noteEl.textContent = `Preisverlauf nicht verfügbar: ${error.message || 'Fehler'}`;
+      if (_charts[chartId]) { _charts[chartId].destroy(); delete _charts[chartId]; }
+    }
+  }
+
+  async function _renderCharts(entries, costs) {
     const validCons = entries.filter(e => e.consumption);
     const labels    = validCons.map(e => Calc.fmtDate(e.date, true));
     const consData  = validCons.map(e => e.consumption);
-    const pplData   = entries.filter(e => e.pricePerLiter)
-                             .map(e => ({ x: Calc.fmtDate(e.date, true), y: e.pricePerLiter }));
 
     // Consumption chart
     _makeChart('chart-consumption', 'line', labels, consData, 'L/100km', '#f59e0b');
 
-    // Price chart
-    _makeChart('chart-price', 'line',
-      entries.filter(e => e.pricePerLiter).map(e => Calc.fmtDate(e.date, true)),
-      entries.filter(e => e.pricePerLiter).map(e => e.pricePerLiter),
-      '€/L', '#38bdf8'
-    );
+    // Price chart (30d histogram from price radar)
+    const pricePeriodBar = document.getElementById('analyse-price-periods');
+    if (pricePeriodBar) {
+      pricePeriodBar.innerHTML = `
+        <button class="price-period-btn active" data-mode="30d" onclick="App.setPriceChartMode('30d', this)">30 Tage Ø täglich</button>
+        <button class="price-period-btn" data-mode="180d" onclick="App.setPriceChartMode('180d', this)">6 Monate Ø täglich</button>
+        <button class="price-period-btn" data-mode="7d" onclick="App.setPriceChartMode('7d', this)">7 Tage stündlich</button>
+      `;
+    }
+    await _renderPriceChartFromRadar();
 
     // Monthly costs chart (fuel + extras)
     const fuelByMonth = {};
@@ -775,6 +995,12 @@ const App = (() => {
       monthsSorted.map(m => +fuelByMonth[m].toFixed(2)),
       '€', '#4ade80'
     );
+  }
+
+  function setPriceChartMode(mode, btn) {
+    document.querySelectorAll('.price-period-btn').forEach((node) => node.classList.remove('active'));
+    if (btn) btn.classList.add('active');
+    _renderPriceChartFromRadar();
   }
 
   function _makeChart(id, type, labels, data, label, color) {
@@ -1602,18 +1828,262 @@ const App = (() => {
 
   // ── SETTINGS ────────────────────────────────────────────────
 
-  function openSettings() {
+  function _renderFavoriteStationResults() {
+    const el = document.getElementById('set-station-results');
+    if (!el) return;
+    if (!_favoriteStationResults.length) {
+      el.innerHTML = '<div class="settings-station-meta">Keine Treffer. Suche starten.</div>';
+      return;
+    }
+    el.innerHTML = _favoriteStationResults.map((station) => {
+      const checked = _favoriteStationIds.includes(station.id) ? 'checked' : '';
+      const label = [station.brand, station.name].filter(Boolean).join(' · ');
+      const location = [station.street, station.place].filter(Boolean).join(', ');
+      return `
+        <label class="settings-station-row">
+          <input type="checkbox" ${checked} onchange="App.toggleFavoriteStation('${station.id}', this.checked)">
+          <div>
+            <div>${esc(label || station.id)}</div>
+            <div class="settings-station-meta">${esc(location || '—')} ${station.distanceKm != null ? `· ${station.distanceKm} km` : ''}</div>
+            <div class="settings-station-meta">${esc(station.id)}</div>
+          </div>
+        </label>
+      `;
+    }).join('');
+  }
+
+  function _renderFavoriteStationSelected() {
+    const el = document.getElementById('set-station-selected');
+    if (!el) return;
+    if (!_favoriteStationIds.length) {
+      el.innerHTML = '<div class="settings-station-meta">Aktuell keine Lieblingstankstellen gesetzt.</div>';
+      return;
+    }
+    el.innerHTML = `
+      <div class="settings-station-meta" style="margin-bottom:6px">${_favoriteStationIds.length} gespeichert:</div>
+      ${_favoriteStationIds.map((id) => `<div class="settings-station-meta">${esc(id)}</div>`).join('')}
+    `;
+  }
+
+  async function searchFavoriteStations() {
+    const q = document.getElementById('set-station-search')?.value?.trim() || '';
+    try {
+      const result = await API.searchFuelStations({ q });
+      _favoriteStationResults = Array.isArray(result?.stations) ? result.stations : [];
+      _renderFavoriteStationResults();
+    } catch (error) {
+      toast(`Stationssuche fehlgeschlagen: ${error.message || 'Fehler'}`, 'error');
+    }
+  }
+
+  function toggleFavoriteStation(id, checked) {
+    const key = String(id || '').trim();
+    if (!key) return;
+    if (checked) {
+      if (!_favoriteStationIds.includes(key)) _favoriteStationIds.push(key);
+    } else {
+      _favoriteStationIds = _favoriteStationIds.filter((entry) => entry !== key);
+    }
+    _renderFavoriteStationSelected();
+  }
+
+  async function saveFavoriteStations() {
+    try {
+      const saved = await API.saveFuelStationPreferences(_favoriteStationIds);
+      _favoriteStationIds = Array.isArray(saved?.stationIds) ? saved.stationIds : _favoriteStationIds;
+      _renderFavoriteStationSelected();
+      toast('Lieblingstankstellen gespeichert ✓', 'success');
+      await _renderFuelPriceInsight();
+    } catch (error) {
+      toast(`Speichern fehlgeschlagen: ${error.message || 'Fehler'}`, 'error');
+    }
+  }
+
+  async function openSettings() {
+    const accountInfoEl = document.getElementById('settings-account-info');
+    if (accountInfoEl) {
+      const username = _session?.user?.email || '—';
+      const garageName = _session?.garage?.name || '—';
+      accountInfoEl.innerHTML = `
+        <div class="settings-account-label">Aktives Konto</div>
+        <div class="settings-account-value">${esc(username)}</div>
+        <div class="settings-account-label" style="margin-top:8px">Aktive Garage</div>
+        <div class="settings-account-value">${esc(garageName)}</div>
+      `;
+    }
     document.getElementById('set-warn-consumption').value = _settings.warnConsumption || 25;
     document.getElementById('set-remind-days').value = _settings.remindDays || 14;
+    document.getElementById('set-petrol-variant').value = _settings.petrolVariant === 'e10' ? 'e10' : 'e5';
+    document.getElementById('set-station-search').value = '';
+    _favoriteStationResults = [];
+    _renderFavoriteStationResults();
+    try {
+      const prefs = await API.getFuelStationPreferences();
+      _favoriteStationIds = Array.isArray(prefs?.stationIds) ? prefs.stationIds : [];
+    } catch {
+      _favoriteStationIds = [];
+    }
+    _renderFavoriteStationSelected();
     openOverlay('overlay-settings');
   }
 
   async function saveSettings() {
     _settings.warnConsumption = parseFloat(document.getElementById('set-warn-consumption').value) || 25;
     _settings.remindDays = parseInt(document.getElementById('set-remind-days').value) || 14;
-    await DB.saveSettings(_settings);
+    _settings.petrolVariant = document.getElementById('set-petrol-variant').value === 'e10' ? 'e10' : 'e5';
+    _settings = await DB.saveSettings(_settings);
     closeOverlay('overlay-settings');
     toast('Einstellungen gespeichert ✓', 'success');
+    await _renderFuelPriceInsight();
+  }
+
+  async function openPriceMap() {
+    const body = document.getElementById('price-map-body');
+    if (!body) return;
+    body.innerHTML = '<div class="price-radar-note">Karte wird geladen…</div>';
+    openOverlay('overlay-price-map');
+
+    try {
+      const vehicle = currentVehicle();
+      if (!vehicle) {
+        body.innerHTML = '<div class="price-radar-note">Kein Fahrzeug ausgewählt.</div>';
+        return;
+      }
+      const fuelCfg = _lastPriceRadarContext || _resolveRadarFuelConfig(vehicle);
+      const [allResult, favResult] = await Promise.all([
+        API.getFuelPriceMapPreview(fuelCfg.fuelType, {
+          fuelVariant: fuelCfg.fuelVariant,
+          scope: 'all',
+          limit: 30
+        }),
+        API.getFuelPriceMapPreview(fuelCfg.fuelType, {
+          fuelVariant: fuelCfg.fuelVariant,
+          scope: 'favorites',
+          limit: 80
+        })
+      ]);
+      const allStations = Array.isArray(allResult?.stations) ? allResult.stations : [];
+      const favoriteStations = Array.isArray(favResult?.stations) ? favResult.stations : [];
+      const byId = new Map();
+      allStations.forEach((station) => {
+        if (!station?.id) return;
+        byId.set(station.id, { ...station, isFavorite: false });
+      });
+      favoriteStations.forEach((station) => {
+        if (!station?.id) return;
+        const prev = byId.get(station.id);
+        byId.set(station.id, { ...(prev || station), ...station, isFavorite: true });
+      });
+      const stations = [...byId.values()]
+        .filter((station) => Number.isFinite(Number(station.price)))
+        .sort((a, b) => Number(a.price) - Number(b.price));
+      if (!stations.length) {
+        body.innerHTML = '<div class="price-radar-note">Keine Karten-/Stationsdaten verfügbar.</div>';
+        return;
+      }
+
+      const centerLat = Number(allResult?.lat ?? favResult?.lat);
+      const centerLng = Number(allResult?.lng ?? favResult?.lng);
+      const mapHtml = '<div id="price-map-canvas" class="price-map-canvas"></div>';
+      const uniquePrices = [...new Set(
+        stations
+          .map((station) => Number(Number(station.price || 0).toFixed(3)))
+          .filter((value) => Number.isFinite(value) && value > 0)
+      )].sort((a, b) => a - b);
+      const classByPrice = new Map();
+      if (uniquePrices.length === 1) {
+        classByPrice.set(uniquePrices[0], 'cheap');
+      } else if (uniquePrices.length === 2) {
+        classByPrice.set(uniquePrices[0], 'cheap');
+        classByPrice.set(uniquePrices[1], 'expensive');
+      } else {
+        uniquePrices.forEach((price, index) => {
+          const ratio = index / (uniquePrices.length - 1);
+          const cls = ratio <= 0.33 ? 'cheap' : ratio >= 0.66 ? 'expensive' : 'mid';
+          classByPrice.set(price, cls);
+        });
+      }
+      const getPriceClass = (station) => {
+        const key = Number(Number(station.price || 0).toFixed(3));
+        return classByPrice.get(key) || 'mid';
+      };
+      const displayStations = [...stations].sort((a, b) => {
+        if (a.isFavorite && !b.isFavorite) return -1;
+        if (!a.isFavorite && b.isFavorite) return 1;
+        return Number(a.price) - Number(b.price);
+      });
+      const listHtml = displayStations.map((station, index) => {
+        const line1 = [station.brand, station.name].filter(Boolean).join(' · ');
+        const line2 = [station.street, station.place].filter(Boolean).join(', ');
+        const lat = Number(station.lat);
+        const lng = Number(station.lng);
+        const priceClass = getPriceClass(station);
+        const osm = Number.isFinite(lat) && Number.isFinite(lng)
+          ? `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}#map=15/${lat}/${lng}`
+          : null;
+        return `
+          <div class="price-map-row ${station.isFavorite ? 'favorite' : ''}">
+            <div>
+              <div>${index + 1}. ${station.isFavorite ? '★ ' : ''}${esc(line1 || station.id)}</div>
+              <div class="settings-station-meta">${esc(line2 || '—')} ${station.distanceKm != null ? `· ${station.distanceKm} km` : ''}</div>
+            </div>
+            <div style="text-align:right">
+              <div class="price-map-price ${priceClass}">${_fmtPriceValue(station.price)} €/L</div>
+              ${osm ? `<a class="price-map-link" target="_blank" rel="noopener" href="${osm}">auf Karte</a>` : ''}
+            </div>
+          </div>
+        `;
+      }).join('');
+      body.innerHTML = `
+        ${mapHtml}
+        <div class="settings-station-meta" style="margin:8px 0 6px">Preisübersicht in deiner Garagen-Gegend (${stations.length} inkl. Favoriten)</div>
+        <div class="price-map-list">${listHtml}</div>
+      `;
+
+      const mapEl = document.getElementById('price-map-canvas');
+      const L = window.L;
+      if (mapEl && L) {
+        if (_priceMapInstance) {
+          _priceMapInstance.remove();
+          _priceMapInstance = null;
+        }
+        const lat = Number.isFinite(centerLat) ? centerLat : (Number(stations[0]?.lat) || 53.0793);
+        const lng = Number.isFinite(centerLng) ? centerLng : (Number(stations[0]?.lng) || 8.8017);
+        _priceMapInstance = L.map(mapEl, { zoomControl: true }).setView([lat, lng], 12);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+          maxZoom: 19,
+          attribution: '&copy; OpenStreetMap-Mitwirkende'
+        }).addTo(_priceMapInstance);
+
+        const bounds = [];
+        stations.forEach((station) => {
+          const sLat = Number(station.lat);
+          const sLng = Number(station.lng);
+          if (!Number.isFinite(sLat) || !Number.isFinite(sLng)) return;
+          const priceClass = getPriceClass(station);
+          const markerClass = station.isFavorite ? `${priceClass} favorite` : priceClass;
+          const icon = L.divIcon({
+            className: 'price-map-marker',
+            html: `<span class="${markerClass}">${station.isFavorite ? '★ ' : ''}${_fmtPriceValue(station.price)}€</span>`,
+            iconSize: [54, 24],
+            iconAnchor: [27, 12]
+          });
+          const popupTitle = [station.brand, station.name].filter(Boolean).join(' · ') || station.id;
+          const popupAddr = [station.street, station.place].filter(Boolean).join(', ');
+          L.marker([sLat, sLng], { icon })
+            .addTo(_priceMapInstance)
+            .bindPopup(`<strong>${esc(popupTitle)}</strong><br>${esc(popupAddr || '—')}<br>${_fmtPriceValue(station.price)} €/L`);
+          bounds.push([sLat, sLng]);
+        });
+        if (bounds.length >= 2) {
+          _priceMapInstance.fitBounds(bounds, { padding: [22, 22] });
+        } else if (bounds.length === 1) {
+          _priceMapInstance.setView(bounds[0], 14);
+        }
+      }
+    } catch (error) {
+      body.innerHTML = `<div class="price-radar-note">Karte konnte nicht geladen werden.<br><span style="color:var(--t3)">${esc(error?.message || 'Fehler')}</span></div>`;
+    }
   }
 
   // ── OVERLAYS ─────────────────────────────────────────────────
@@ -1680,7 +2150,7 @@ const App = (() => {
 
   // ── PUBLIC API ───────────────────────────────────────────────
   async function login() {
-    const email = document.getElementById('login-email')?.value.trim().toLowerCase();
+    const username = document.getElementById('login-email')?.value.trim().toLowerCase();
     const password = document.getElementById('login-password')?.value || '';
     const errEl = document.getElementById('auth-error');
 
@@ -1689,16 +2159,16 @@ const App = (() => {
       errEl.textContent = '';
     }
 
-    if (!email || !password) {
+    if (!username || !password) {
       if (errEl) {
-        errEl.textContent = 'E-Mail und Passwort eingeben';
+        errEl.textContent = 'Name und Passwort eingeben';
         errEl.style.display = 'block';
       }
       return;
     }
 
     try {
-      await API.login(email, password);
+      await API.login(username, password);
       document.getElementById('login-password').value = '';
       await init();
     } catch (error) {
@@ -1714,8 +2184,14 @@ const App = (() => {
     _session = null;
     _vehicles = [];
     _currentVehicleId = null;
+    localStorage.removeItem('tanklog_vehicle');
     closeOverlay('overlay-settings');
     _showAuthScreen('Du wurdest abgemeldet.');
+  }
+
+  async function switchAccount() {
+    if (!confirm('Aktuelles Konto abmelden und andere Garage/Konto wählen?')) return;
+    await logout();
   }
 
   async function toggleSync() {
@@ -1734,10 +2210,13 @@ const App = (() => {
     openMaintForm, saveMaint, deleteMaint, downloadMaintICS, downloadAllICS,
     openCostForm, saveCost, deleteCost,
     renderAnalyse, setAnalysePeriod,
+    setPriceScope, setPriceChartMode,
     switchListTab, addFromList,
     toggleSync, syncNow,
     exportJSON, importJSON, importCSV, clearAllData,
-    openSettings, saveSettings, login, logout,
+    openSettings, saveSettings, login, logout, switchAccount,
+    openPriceMap, refreshPriceRadar,
+    searchFavoriteStations, toggleFavoriteStation, saveFavoriteStations,
     openOverlay, closeOverlay,
     // Vehicle DB picker
     vdbSelectBrand, vdbSelectModel, vdbSelectGeneration, vdbSelectVariant,

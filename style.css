@@ -378,6 +378,261 @@ button, input, select, textarea { font-family: inherit; }
 #home-last-fuel { padding: 14px; margin: 0 12px; }
 #home-upcoming { margin: 0 12px; }
 #home-recent-list { margin: 0 12px; }
+#home-price-insight { padding: 14px; margin: 0 12px; }
+
+.price-radar-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.price-radar-scope {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--t3);
+  margin-bottom: 6px;
+  letter-spacing: 0.4px;
+}
+.price-radar-scope-toggle {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+.price-radar-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 6px;
+}
+.price-mini-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--t2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+.price-mini-btn:active { transform: translateY(1px); }
+.price-toggle {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--t2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 7px 8px;
+  cursor: pointer;
+}
+.price-toggle.active {
+  color: var(--amber);
+  border-color: rgba(245,158,11,0.5);
+  background: var(--amber-d);
+}
+.analyse-price-periods {
+  display: flex;
+  gap: 8px;
+  padding: 0 12px 6px;
+}
+.price-period-btn {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--t2);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.price-period-btn.active {
+  color: var(--blue);
+  border-color: rgba(56,189,248,0.45);
+}
+.price-radar-price {
+  font-family: var(--font-mono);
+  font-size: 24px;
+  font-weight: 700;
+  color: var(--amber);
+}
+.price-radar-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  border-radius: 999px;
+  padding: 6px 10px;
+  border: 1px solid var(--border2);
+}
+.price-radar-badge.cheap {
+  color: var(--green);
+  border-color: rgba(74,222,128,0.4);
+  background: rgba(74,222,128,0.1);
+}
+.price-radar-badge.neutral {
+  color: var(--t2);
+  background: var(--bg2);
+}
+.price-radar-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.price-radar-cell {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg2);
+  padding: 8px;
+}
+.price-radar-cell-label {
+  font-family: var(--font-mono);
+  font-size: 9px;
+  color: var(--t3);
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+.price-radar-cell-value {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--t1);
+}
+.price-radar-meta {
+  margin-top: 10px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--t3);
+}
+.price-radar-note {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--t2);
+  line-height: 1.5;
+}
+
+.settings-account-info {
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  border-radius: var(--radius-sm);
+  padding: 10px;
+  margin-bottom: 10px;
+}
+.settings-account-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--t3);
+}
+.settings-account-value {
+  font-family: var(--font-head);
+  font-size: 14px;
+  color: var(--t1);
+}
+.settings-stations-list,
+.settings-stations-selected {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg2);
+  padding: 8px;
+  margin-top: 8px;
+  max-height: 180px;
+  overflow: auto;
+}
+.settings-station-row {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.settings-station-row:last-child { border-bottom: none; }
+.settings-station-meta {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--t3);
+}
+.price-map-iframe {
+  display: block;
+  width: 100%;
+  height: 220px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.price-map-canvas {
+  width: 100%;
+  height: 260px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.price-map-marker {
+  background: transparent;
+  border: none;
+}
+.price-map-marker span {
+  display: inline-block;
+  min-width: 48px;
+  text-align: center;
+  background: rgba(8, 11, 15, 0.95);
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 700;
+}
+.price-map-marker span.cheap {
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.55);
+  background: rgba(6, 78, 59, 0.9);
+}
+.price-map-marker span.mid {
+  color: #f59e0b;
+  border: 1px solid rgba(245, 158, 11, 0.55);
+  background: rgba(120, 53, 15, 0.9);
+}
+.price-map-marker span.expensive {
+  color: #f87171;
+  border: 1px solid rgba(248, 113, 113, 0.55);
+  background: rgba(127, 29, 29, 0.9);
+}
+.price-map-marker span.favorite {
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.45);
+}
+.price-map-list {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg2);
+}
+.price-map-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+}
+.price-map-row.favorite {
+  background: rgba(56, 189, 248, 0.06);
+}
+.price-map-row:last-child { border-bottom: none; }
+.price-map-price {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--amber);
+}
+.price-map-price.cheap { color: #34d399; }
+.price-map-price.mid { color: #f59e0b; }
+.price-map-price.expensive { color: #f87171; }
+.price-map-link {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--blue);
+  text-decoration: none;
+}
 
 /* ── UPCOMING CARD ── */
 .upcoming-item {

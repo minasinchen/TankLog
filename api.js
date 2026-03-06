@@ -46,21 +46,73 @@ const API = (() => {
     return payload;
   }
 
-  async function login(email, password) {
+  async function login(username, password) {
     const result = await _request("/auth/login", {
       method: "POST",
       auth: false,
-      body: { email, password }
+      body: { username, password }
     });
     _token = result.token;
     localStorage.setItem(TOKEN_KEY, _token);
     return getMe();
   }
 
+  async function getFuelPriceInsight(fuelType, scope, options = {}) {
+    const query = new URLSearchParams();
+    if (fuelType) query.set("fuelType", fuelType);
+    if (scope) query.set("scope", scope);
+    if (options.fuelVariant) query.set("fuelVariant", String(options.fuelVariant));
+    if (options.force) query.set("force", "1");
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return _request(`/api/fuel-prices/insight${suffix}`);
+  }
+
+  async function getFuelPriceMapPreview(fuelType, options = {}) {
+    const query = new URLSearchParams();
+    if (fuelType) query.set("fuelType", fuelType);
+    if (options.fuelVariant) query.set("fuelVariant", String(options.fuelVariant));
+    if (options.scope) query.set("scope", String(options.scope));
+    if (options.limit !== undefined) query.set("limit", String(options.limit));
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return _request(`/api/fuel-prices/map-preview${suffix}`);
+  }
+
+  async function searchFuelStations(params = {}) {
+    const query = new URLSearchParams();
+    if (params.q) query.set("q", String(params.q));
+    if (params.lat !== undefined) query.set("lat", String(params.lat));
+    if (params.lng !== undefined) query.set("lng", String(params.lng));
+    if (params.radius !== undefined) query.set("radius", String(params.radius));
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return _request(`/api/fuel-prices/stations/search${suffix}`);
+  }
+
+  async function getFuelStationPreferences() {
+    return _request("/api/fuel-prices/stations/preferences");
+  }
+
+  async function saveFuelStationPreferences(stationIds) {
+    return _request("/api/fuel-prices/stations/preferences", {
+      method: "PUT",
+      body: { stationIds }
+    });
+  }
+
   async function getMe() {
     const result = await _request("/auth/me");
     _session = result;
     return _session;
+  }
+
+  async function getSettings() {
+    return _request("/api/settings");
+  }
+
+  async function saveSettings(settings) {
+    return _request("/api/settings", {
+      method: "PUT",
+      body: settings
+    });
   }
 
   async function restoreSession() {
@@ -98,6 +150,13 @@ const API = (() => {
   return {
     request: _request,
     login,
+    getFuelPriceInsight,
+    getFuelPriceMapPreview,
+    searchFuelStations,
+    getFuelStationPreferences,
+    saveFuelStationPreferences,
+    getSettings,
+    saveSettings,
     getMe,
     restoreSession,
     logout,

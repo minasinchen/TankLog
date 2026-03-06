@@ -10,7 +10,8 @@
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Mulish:wght@400;500;600&display=swap" rel="stylesheet">
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.0/chart.umd.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
-  <link rel="stylesheet" href="style.css?v=20260305t">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" crossorigin="">
+  <link rel="stylesheet" href="style.css?v=20260306m">
 </head>
 <body>
 <div id="auth-screen" class="auth-screen">
@@ -19,8 +20,8 @@
     <div class="auth-title">TankLog Login</div>
     <div class="auth-sub" id="auth-subtitle">Melde dich an, um die Garage zu laden.</div>
     <div class="form-group">
-      <label>E-Mail</label>
-      <input type="email" id="login-email" placeholder="ich@example.com" autocomplete="username">
+      <label>Name</label>
+      <input type="text" id="login-email" placeholder="mina" autocomplete="username">
     </div>
     <div class="form-group">
       <label>Passwort</label>
@@ -73,12 +74,22 @@
         </div>
         <div id="home-content">
           <div class="home-stats-grid" id="home-stats"></div>
-          <div class="section-head">Letzter Tankvorgang</div>
-          <div id="home-last-fuel" class="card"></div>
-          <div class="section-head">Bald fällig</div>
-          <div id="home-upcoming"></div>
-          <div class="section-head">Letzte Einträge</div>
-          <div id="home-recent-list" class="card list-card"></div>
+          <div class="home-block" id="home-price-block">
+            <div class="section-head">Preisradar</div>
+            <div id="home-price-insight" class="card"></div>
+          </div>
+          <div class="home-block" id="home-last-fuel-block">
+            <div class="section-head">Letzter Tankvorgang</div>
+            <div id="home-last-fuel" class="card"></div>
+          </div>
+          <div class="home-block" id="home-upcoming-block">
+            <div class="section-head">Bald fällig</div>
+            <div id="home-upcoming"></div>
+          </div>
+          <div class="home-block" id="home-recent-block">
+            <div class="section-head">Letzte Einträge</div>
+            <div id="home-recent-list" class="card list-card"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -198,7 +209,9 @@
         <div class="section-head">Verbrauch — L/100km</div>
         <div class="chart-card card"><canvas id="chart-consumption" height="180"></canvas></div>
         <div class="section-head">Kraftstoffpreis — €/L</div>
+        <div id="analyse-price-periods" class="analyse-price-periods"></div>
         <div class="chart-card card"><canvas id="chart-price" height="160"></canvas></div>
+        <div id="analyse-price-radar-note" style="padding:2px 14px 8px;color:var(--t3);font-family:var(--font-mono);font-size:11px"></div>
         <div class="section-head">Kosten gesamt — €/Monat</div>
         <div class="chart-card card"><canvas id="chart-costs" height="160"></canvas></div>
         <div class="section-head">Kosten nach Kategorie</div>
@@ -221,6 +234,7 @@
           </div>
           <div class="btn-row" style="flex-direction:column;gap:8px">
             <button class="btn btn-secondary btn-full" onclick="App.openSettings()">⚙ Einstellungen öffnen</button>
+            <button class="btn btn-secondary btn-full" onclick="App.switchAccount()">🔄 Garage / Konto wechseln</button>
           </div>
         </div>
 
@@ -572,6 +586,7 @@
       </button>
     </div>
     <div class="overlay-body">
+      <div id="settings-account-info" class="settings-account-info"></div>
       <div class="form-section-label">Warnungen</div>
       <div class="form-group">
         <label>Warnung bei Verbrauch über (L/100km)</label>
@@ -581,9 +596,43 @@
         <label>Wartungs-Erinnerung (Tage)</label>
         <input type="number" id="set-remind-days" placeholder="14" inputmode="numeric">
       </div>
+      <div class="form-group">
+        <label>Preisradar bei Benzin nutzt</label>
+        <select id="set-petrol-variant">
+          <option value="e5">E5 (Super)</option>
+          <option value="e10">E10</option>
+        </select>
+        <div class="settings-station-meta" style="margin-top:6px">Preisabrufe sind absichtlich gedrosselt, da ein kostenloser API-Dienst genutzt wird.</div>
+      </div>
+      <div class="form-section-label">Lieblingstankstellen</div>
+      <div class="form-group">
+        <label>Suche (z. B. Shell Kopernikus oder team Lilienthal)</label>
+        <div class="btn-row">
+          <input type="text" id="set-station-search" placeholder="Name, Straße oder Ort">
+          <button class="btn btn-secondary" type="button" onclick="App.searchFavoriteStations()">Suchen</button>
+        </div>
+      </div>
+      <div id="set-station-results" class="settings-stations-list"></div>
+      <div id="set-station-selected" class="settings-stations-selected"></div>
+      <button class="btn btn-secondary btn-full" onclick="App.saveFavoriteStations()" style="margin-top:8px">Lieblingstankstellen speichern</button>
+      <button class="btn btn-secondary btn-full" onclick="App.openPriceMap()" style="margin-top:8px">Preisradar-Karte (beta)</button>
       <button class="btn btn-primary btn-full" onclick="App.saveSettings()" style="margin-top:12px">Speichern</button>
-      <button class="btn btn-secondary btn-full" onclick="App.logout()" style="margin-top:10px">Abmelden</button>
+      <button class="btn btn-secondary btn-full" onclick="App.switchAccount()" style="margin-top:10px">Garage / Konto wechseln</button>
+      <button class="btn btn-secondary btn-full" onclick="App.logout()" style="margin-top:10px">Nur abmelden</button>
     </div>
+  </div>
+</div>
+
+<!-- Price Map Overlay -->
+<div class="overlay" id="overlay-price-map">
+  <div class="overlay-panel overlay-sheet">
+    <div class="overlay-head">
+      <span>Preisradar-Karte</span>
+      <button class="icon-btn" onclick="App.closeOverlay('overlay-price-map')">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div class="overlay-body" id="price-map-body"></div>
   </div>
 </div>
 
@@ -712,12 +761,13 @@
 </div>
 
 <!-- Cache-Busting für GitHub Pages / Samsung Chrome -->
-<script src="api.js?v=20260305l"></script>
-<script src="db.js?v=20260305l"></script>
-<script src="calc.js?v=20260305l"></script>
-<script src="vehicles.js?v=20260305l"></script>
-<script src="ocr.js?v=20260305t"></script>
-<script src="build-meta.js?v=20260305t"></script>
-<script src="app.js?v=20260305t"></script>
+<script src="api.js?v=20260306m"></script>
+<script src="db.js?v=20260306m"></script>
+<script src="calc.js?v=20260306m"></script>
+<script src="vehicles.js?v=20260306m"></script>
+<script src="ocr.js?v=20260306m"></script>
+<script src="build-meta.js?v=20260306m"></script>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" crossorigin=""></script>
+<script src="app.js?v=20260306m"></script>
 </body>
 </html>

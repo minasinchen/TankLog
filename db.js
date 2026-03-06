@@ -288,19 +288,47 @@ const DB = (() => {
 
   async function getSettings() {
     try {
-      const raw = localStorage.getItem(SETTINGS_KEY);
-      return raw ? JSON.parse(raw) : { warnConsumption: 25, remindDays: 14 };
+      const remote = await API.getSettings();
+      const normalized = {
+        warnConsumption: Number(remote?.warnConsumption) || 25,
+        remindDays: Number(remote?.remindDays) || 14,
+        petrolVariant: remote?.petrolVariant === "e10" ? "e10" : "e5"
+      };
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(normalized));
+      return normalized;
     } catch {
-      return { warnConsumption: 25, remindDays: 14 };
+      try {
+        const raw = localStorage.getItem(SETTINGS_KEY);
+        const parsed = raw ? JSON.parse(raw) : {};
+        return {
+          warnConsumption: Number(parsed.warnConsumption) || 25,
+          remindDays: Number(parsed.remindDays) || 14,
+          petrolVariant: parsed.petrolVariant === "e10" ? "e10" : "e5"
+        };
+      } catch {
+        return { warnConsumption: 25, remindDays: 14, petrolVariant: "e5" };
+      }
     }
   }
 
   async function saveSettings(settings) {
     const next = {
       warnConsumption: Number(settings.warnConsumption) || 25,
-      remindDays: Number(settings.remindDays) || 14
+      remindDays: Number(settings.remindDays) || 14,
+      petrolVariant: settings.petrolVariant === "e10" ? "e10" : "e5"
     };
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+    try {
+      const remote = await API.saveSettings(next);
+      const normalized = {
+        warnConsumption: Number(remote?.warnConsumption) || next.warnConsumption,
+        remindDays: Number(remote?.remindDays) || next.remindDays,
+        petrolVariant: remote?.petrolVariant === "e10" ? "e10" : "e5"
+      };
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(normalized));
+      return normalized;
+    } catch {
+      localStorage.setItem(SETTINGS_KEY, JSON.stringify(next));
+    }
     return next;
   }
 

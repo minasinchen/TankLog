@@ -539,6 +539,17 @@ const VehicleDB = {
     // ═══════════════════════════════════════════════════════════
     'Peugeot': {
       models: {
+        '206+': {
+          '206+ 2009–2013': [
+            { name: '1.1 60 PS',         code: 'TU1JP',    fuel: 'Benzin',  oil: '5W-40', power: 60,  tires: ['175/65 R14','185/55 R15'] },
+            { name: '1.4 75 PS',         code: 'TU3A',     fuel: 'Benzin',  oil: '5W-40', power: 75,  tires: ['175/65 R14','185/55 R15'] },
+            { name: '1.4 16V 90 PS',     code: 'ET3J4',    fuel: 'Benzin',  oil: '5W-40', power: 90,  tires: ['185/55 R15','195/45 R16'] },
+            { name: '1.6 16V 109 PS',    code: 'TU5JP4',   fuel: 'Benzin',  oil: '5W-40', power: 109, tires: ['185/55 R15','195/45 R16'] },
+            { name: '1.4 HDi 68 PS',     code: 'DV4TD',    fuel: 'Diesel',  oil: '5W-30', power: 68,  tires: ['175/65 R14','185/55 R15'] },
+            { name: '1.6 HDi 90 PS',     code: 'DV6ATED4', fuel: 'Diesel',  oil: '5W-30', power: 90,  tires: ['185/55 R15','195/45 R16'] },
+            { name: '1.6 HDi 109 PS',    code: 'DV6TED4',  fuel: 'Diesel',  oil: '5W-30', power: 109, tires: ['195/45 R16'] },
+          ],
+        },
         '208': {
           '208 I 2012–2019': [
             { name: '1.2 PureTech 82 PS',code: 'HM01', fuel: 'Benzin',  oil: '5W-30', power: 82,  tires: ['185/65 R15','195/55 R16'] },

@@ -1571,6 +1571,20 @@
     "updatedAt": "2026-03-04T21:50:00.756Z"
   },
   {
+    "_id": "cmmdrhh4c000bry01jwoqvivw",
+    "type": "fuel",
+    "vehicleId": "cmmciivz10001pk01fr1751mc",
+    "date": "2025-02-28",
+    "liters": 47.72,
+    "totalCost": 82.51,
+    "pricePerLiter": 1.729,
+    "odometer": null,
+    "isPartial": false,
+    "notes": "",
+    "createdAt": "2026-03-05T17:50:46.765Z",
+    "updatedAt": "2026-03-05T17:50:46.765Z"
+  },
+  {
     "_id": "cmmckla35006dpk01vahsz2pq",
     "type": "fuel",
     "vehicleId": "cmmciivz10001pk01fr1751mc",
@@ -1583,6 +1597,20 @@
     "notes": "",
     "createdAt": "2026-03-04T21:50:00.785Z",
     "updatedAt": "2026-03-04T21:50:00.785Z"
+  },
+  {
+    "_id": "cmmcxjc9s0007ry01he2g1uhh",
+    "type": "fuel",
+    "vehicleId": "cmmciivz10001pk01fr1751mc",
+    "date": "2025-06-21",
+    "liters": 49.87,
+    "totalCost": 84.23,
+    "pricePerLiter": 1.689,
+    "odometer": null,
+    "isPartial": false,
+    "notes": "",
+    "createdAt": "2026-03-05T03:52:25.312Z",
+    "updatedAt": "2026-03-05T03:52:25.312Z"
   },
   {
     "_id": "cmmckla3y006fpk01wdovvnkz",
@@ -1599,6 +1627,20 @@
     "updatedAt": "2026-03-04T21:50:00.814Z"
   },
   {
+    "_id": "cmmcrfcnt0005ry01lle48jlc",
+    "type": "fuel",
+    "vehicleId": "cmmciivz10001pk01fr1751mc",
+    "date": "2025-09-19",
+    "liters": 47.24,
+    "totalCost": 80.73,
+    "pricePerLiter": 1.709,
+    "odometer": null,
+    "isPartial": false,
+    "notes": "",
+    "createdAt": "2026-03-05T01:01:21.497Z",
+    "updatedAt": "2026-03-05T01:01:21.497Z"
+  },
+  {
     "_id": "cmmckla4t006hpk01gffyk0kj",
     "type": "fuel",
     "vehicleId": "cmmciivz10001pk01fr1751mc",
@@ -1613,6 +1655,48 @@
     "updatedAt": "2026-03-04T21:50:00.845Z"
   },
   {
+    "_id": "cmmdrqptp000dry013xw9nnkq",
+    "type": "fuel",
+    "vehicleId": "cmmciivz10001pk01fr1751mc",
+    "date": "2025-10-30",
+    "liters": 50.25,
+    "totalCost": 82.86,
+    "pricePerLiter": 1.649,
+    "odometer": null,
+    "isPartial": false,
+    "notes": "",
+    "createdAt": "2026-03-05T17:57:57.949Z",
+    "updatedAt": "2026-03-05T17:57:57.949Z"
+  },
+  {
+    "_id": "cmmcnc2eo0001ry0182k8n66p",
+    "type": "fuel",
+    "vehicleId": "cmmciivz10001pk01fr1751mc",
+    "date": "2026-01-07",
+    "liters": 49.04,
+    "totalCost": 84.3,
+    "pricePerLiter": 1.719,
+    "odometer": 119072,
+    "isPartial": false,
+    "notes": "",
+    "createdAt": "2026-03-04T23:06:49.777Z",
+    "updatedAt": "2026-03-04T23:06:49.777Z"
+  },
+  {
+    "_id": "cmmevotf9000fry01q3899kzy",
+    "type": "fuel",
+    "vehicleId": "cmmciivz10001pk01fr1751mc",
+    "date": "2026-03-06",
+    "liters": 48.76,
+    "totalCost": 96.5,
+    "pricePerLiter": 1.979,
+    "odometer": 119725,
+    "isPartial": false,
+    "notes": "",
+    "createdAt": "2026-03-06T12:36:13.941Z",
+    "updatedAt": "2026-03-06T12:36:13.941Z"
+  },
+  {
     "_id": "cmmcipm480003pk011x7fzqn6",
     "type": "maintenance",
     "vehicleId": "cmmciivz10001pk01fr1751mc",
@@ -1623,10 +1707,10 @@
     "reminderDaysBefore": 30,
     "reminderKmBefore": null,
     "odometer": null,
-    "cost": null,
+    "cost": 164,
     "notes": "",
     "createdAt": "2026-03-04T20:57:23.768Z",
-    "updatedAt": "2026-03-04T20:57:23.768Z"
+    "updatedAt": "2026-03-04T23:21:52.691Z"
   },
   {
     "_id": "cmmciqe7m0005pk01lp7jend8",
