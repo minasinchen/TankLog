@@ -108,5 +108,25 @@
     "stationId": "51d4b5e7-a095-1aa0-e100-80009459e03a",
     "stationName": null,
     "price": 1.899
+  },
+  {
+    "timestamp": "2026-03-06T19:00:00.000Z",
+    "garageId": "cmmewikry0005l320hldlndc2",
+    "fuelType": "PETROL_E5",
+    "mode": "favorites",
+    "resolution": "hour",
+    "stationId": "ff0a499f-0325-41c9-a78c-14dd1773af0b",
+    "stationName": null,
+    "price": 1.919
+  },
+  {
+    "timestamp": "2026-03-06T19:00:00.000Z",
+    "garageId": "cmmewikry0005l320hldlndc2",
+    "fuelType": "PETROL_E5",
+    "mode": "all",
+    "resolution": "hour",
+    "stationId": "ff0a499f-0325-41c9-a78c-14dd1773af0b",
+    "stationName": null,
+    "price": 1.919
   }
 ]

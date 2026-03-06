@@ -54,5 +54,21 @@
     "samples": 1,
     "label": "Fr ca. 18:00",
     "generatedAt": "2026-03-06T18:55:31.946Z"
+  },
+  "cmmewikry0005l320hldlndc2|PETROL_E5|favorites": {
+    "weekday": 5,
+    "hour": 19,
+    "avgPrice": 1.919,
+    "samples": 1,
+    "label": "Fr ca. 19:00",
+    "generatedAt": "2026-03-06T19:09:23.749Z"
+  },
+  "cmmewikry0005l320hldlndc2|PETROL_E5|all": {
+    "weekday": 5,
+    "hour": 19,
+    "avgPrice": 1.919,
+    "samples": 1,
+    "label": "Fr ca. 19:00",
+    "generatedAt": "2026-03-06T19:09:16.776Z"
   }
 }
